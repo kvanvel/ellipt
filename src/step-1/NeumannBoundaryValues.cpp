@@ -15,8 +15,8 @@ NeumannBoundaryValues<dim>::value(const dealii::Point<dim> & point) const
 
 {
   dealii::Tensor<1,dim> return_value;
-  return_value[0] = cos(point[0]) * cos(point[1]);
-  return_value[1] = -sin(point[0]) * sin(point[1]);
+  return_value[0] = cos(point[0]) * sin(point[1]);
+  return_value[1] = sin(point[0]) * cos(point[1]);
 
   return return_value;    
     

@@ -16,15 +16,23 @@ SET(TARGET_SRC
   SourceBodyValues.cpp  
   NeumannBoundaryValues.cpp
   EllipticProblem.cpp
-  #  SchurComplement.cpp
   PSigmaPStar.cpp
   Q_UStar_SStar_inverseMassQ_S_U_Q.cpp
+  Q_UStar_massU_U_QStar.cpp
   ApproximateSchurComplement.cpp
   SchurComplementPoisson.cpp
   ApproximateSchurComplementPoisson.cpp
   NeumanBoundaryValuesPoisson.cpp
   # You can specify additional files here!
-  )
+)
+
+
+
+
+
+
+
+
 
 # Usually, you will not need to modify anything beyond this point...
 
@@ -43,6 +51,10 @@ IF(NOT ${deal.II_FOUND})
     )
 ENDIF()
 
+
 DEAL_II_INITIALIZE_CACHED_VARIABLES()
 PROJECT(${TARGET})
+
 DEAL_II_INVOKE_AUTOPILOT()
+TARGET_LINK_LIBRARIES(${TARGET} /usr/local/lib/libgrvy.so)
+

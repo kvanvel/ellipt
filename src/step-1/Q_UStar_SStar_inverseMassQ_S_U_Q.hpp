@@ -18,7 +18,9 @@ public:
    const dealii::SparseMatrix<heat::real> &inverseMassQ_In,
    const dealii::SparseMatrix<heat::real> &totalUFromQ_In);
 
-
+  unsigned int
+  m(void) const;
+  
   void 
   vmult(dealii::Vector<heat::real> &destination,
 	const dealii::Vector<heat::real> &source) const;

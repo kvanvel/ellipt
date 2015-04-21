@@ -22,7 +22,12 @@ Q_UStar_SStar_inverseMassQ_S_U_Q
   temp5( totalUFromQ_In.m() ),
   temp6( U_In.m() )  
 {}
-  
+
+unsigned int
+Q_UStar_SStar_inverseMassQ_S_U_Q::m(void) const
+{
+  return Q->m();
+}
 
 void
 Q_UStar_SStar_inverseMassQ_S_U_Q
@@ -30,14 +35,15 @@ Q_UStar_SStar_inverseMassQ_S_U_Q
 	const dealii::Vector<heat::real> &source) const
 
 {  
-  Q->Tvmult(temp1, source);
-  U->vmult(temp2,temp1);
-  totalQFromU->vmult(temp3,temp2);
-  inverseMassQ->vmult(temp4,temp3);
-  totalUFromQ->vmult(temp5,temp4);
-  U->Tvmult(temp6, temp5);
-  Q->vmult(destination, temp6);
-  destination *= -1.0;  
+  
+  Q->Tvmult(temp1, source);  
+  U->vmult(temp2,temp1);  
+  totalQFromU->vmult(temp3,temp2);  
+  inverseMassQ->vmult(temp4,temp3);  
+  totalQFromU->Tvmult(temp5,temp4);  
+  U->Tvmult(temp6, temp5);  
+  Q->vmult(destination, temp6);  
+  
 }
 
 void

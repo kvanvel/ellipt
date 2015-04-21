@@ -5,6 +5,7 @@
 #include <iostream>
 #include <iomanip>
 #include <stdlib.h>
+#include <complex>
 
 #include <boost/math/constants/constants.hpp>
 
@@ -26,6 +27,8 @@
 #include <deal.II/lac/lapack_full_matrix.h>
 #include <deal.II/lac/sparse_direct.h>
 #include <deal.II/lac/sparse_matrix.h>
+#include <deal.II/lac/identity_matrix.h>
+#include <deal.II/lac/arpack_solver.h>
 #include <deal.II/numerics/vector_tools.h>
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/matrix_tools.h>
@@ -41,12 +44,17 @@ public:
   EllipticProblem(const unsigned int degree, const unsigned int refinements);
   void run();
 
+  heat::real L2errorU, L2errorQ;
+
 private:
   void 
   assemble_system();
 
   void
   print_system();
+
+  void
+  output_results_eigensystem();
   
   void 
   make_grid();
@@ -235,7 +243,7 @@ private:
 
   
   void
-  assembleU_RHS_FromDirPlusLocal
+  assembleQ_RHS_FromDirPlusLocal
   (const dealii::FEFaceValuesBase<dim> & fe_v_face_Q,
    dealii::Vector<heat::real> & Q_Vector);
 
@@ -293,6 +301,9 @@ private:
 
   void
   ElliptSolve();
+
+  void
+  EigenSolve();
   
   void
   USolve();
@@ -386,6 +397,7 @@ private:
   
   const unsigned int degree;
   const unsigned int refinements;
+  const unsigned int n_eigenvalues;
   unsigned int rankBoundaryMassU;
   unsigned int nullityBoundaryMassU;
   
@@ -497,23 +509,29 @@ private:
   dealii::BlockVector<heat::real> state;
   
   dealii::Vector<heat::real> Ustate;
+  dealii::Vector<heat::real> UperpNEW;
+  dealii::Vector<heat::real> UparNEW;
   //dealii::Vector<heat::real> DeltaUState;
-  //  dealii::Vector<heat::real> UStateDot;
+  //dealii::Vector<heat::real> UStateDot;
   dealii::Vector<heat::real> lagrangeU;
   dealii::Vector<heat::real> lambdaU;
   dealii::Vector<heat::real> constraintDirU;
   dealii::Vector<heat::real> Qstate;
   dealii::Vector<heat::real> lagrangeQ;
   dealii::Vector<heat::real> constraintNeuQ; //And Rob?
-  dealii::Vector<heat::real> U_RHS;
+  //dealii::Vector<heat::real> U_RHS;
+  dealii::Vector<heat::real> U_MinusRHS;
   dealii::Vector<heat::real> U_RHS_From_U;
-  dealii::Vector<heat::real> UdirConstraint_RHS;  
-  dealii::Vector<heat::real> Q_RHS;
+  dealii::Vector<heat::real> UdirConstraint_RHS;
+  //dealii::Vector<heat::real> Q_RHS;
+  dealii::Vector<heat::real> Q_MinusRHS;
   //dealii::Vector<heat::real> PotState;
   //dealii::Vector<heat::real> ElecState;
   //dealii::Vector<heat::real> Elec_RHS;
   //dealii::Vector<heat::real> PoissonNeuBC_RHS;
   //dealii::Vector<heat::real> lagrangeElec;
+  std::vector< dealii::Vector<heat::real> > UeigenStates;
+  std::vector< dealii::Vector<heat::real> > QeigenStates;
   
   dealii::MappingQ1<dim> mapping;
   dealii::MappingQ1<dim-1,dim> faceMapping;

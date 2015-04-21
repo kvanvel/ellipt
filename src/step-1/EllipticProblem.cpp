@@ -8,6 +8,7 @@
 #include "SourceBodyValues.hpp"
 #include "PSigmaPStar.hpp"
 #include "Q_UStar_SStar_inverseMassQ_S_U_Q.hpp"
+#include "Q_UStar_massU_U_QStar.hpp"
 #include "ApproximateSchurComplement.hpp"
 #include "SchurComplementPoisson.hpp"
 #include "ApproximateSchurComplementPoisson.hpp"
@@ -21,16 +22,17 @@ namespace heat{
 const heat::real pi = boost::math::constants::pi<heat::real>();
 
 template<int dim>
-EllipticProblem<dim>::EllipticProblem(const unsigned int degreeIn, const unsigned int refinementsIn)
+EllipticProblem<dim>::EllipticProblem(const unsigned int degreeIn,
+				      const unsigned int refinementsIn)
   :  
   degree(degreeIn),
   refinements(refinementsIn),
+  n_eigenvalues(5),
   feSystem
   (
    dealii::FE_DGQ<dim>(degree), 1,    // Density
    dealii::FESystem<dim>(dealii::FE_DGQ<dim>(degree), dim),1 //Q
    ),
-  
   feU(degree),
   feQ(dealii::FE_DGQ<dim>(degree),dim),
   feTraceU_Dir(degree),
@@ -41,33 +43,57 @@ EllipticProblem<dim>::EllipticProblem(const unsigned int degreeIn, const unsigne
   dof_handlerQ(triangulation),
   dof_handlerTraceU_Dir(triangulation_Dir),
   dof_handlerTraceU_Neu(triangulation_Neu),
-  dof_handlerTraceU_Rob(triangulation_Rob)
+  dof_handlerTraceU_Rob(triangulation_Rob),
+  UeigenStates(n_eigenvalues),
+  QeigenStates(n_eigenvalues)
 { 
 }
 
 template<int dim>
 void EllipticProblem<dim>::run()
 { 
+
+  //grvy_timer_begin("make_grid");
   make_grid();
+  //grvy_timer_end("make_grid");
+
+  //grvy_timer_begin("make_dofs"); 
   make_dofs();
+  //grvy_timer_end("make_dofs");
   
+  //grvy_timer_begin("report_dofs");
   //report_dofs();  
-  
+  //grvy_timer_end("report_dofs");
+
+  //grvy_timer_begin("assemble_system");
   assemble_system();
+  //grvy_timer_end("assemble_system");
   
   //DistillMatrices
+  //grvy_timer_begin("Distill Matrices");
   heat::myMatrixTools::DistillMatrix(MassU,MassUSparsityPattern);
   heat::myMatrixTools::DistillMatrix(InverseMassU,InverseMassUSparsityPattern);
   heat::myMatrixTools::DistillMatrix(TotalUFromQ,TotalUFromQSparsityPattern);  
   heat::myMatrixTools::DistillMatrix(MassQ, MassQSparsityPattern);
-  heat::myMatrixTools::DistillMatrix(InverseMassQ, InverseMassQSparsityPattern);
-  heat::myMatrixTools::DistillMatrix(TotalQFromU, TotalQFromUSparsityPattern);
+  heat::myMatrixTools::DistillMatrix(InverseMassQ,
+				     InverseMassQSparsityPattern);
+  heat::myMatrixTools::DistillMatrix(TotalQFromU,
+				     TotalQFromUSparsityPattern);  
+  //grvy_timer_end("Distill Matrices");
+
   
-  //print_system();
 
+  //grvy_timer_begin("ElliptSolve");
   ElliptSolve();
+  
+  //grvy_timer_end("ElliptSolve");
+  //print_system();
+  PrintState(0);
+  
+  //EigenSolve();
 
-  //PrintState(0);
+  //output_results_eigensystem();
+  
   {
     dealii::Vector<heat::real> difference(triangulation.n_active_cells() );
     //const heat::DirichletBoundaryValues<dim> dirBC;
@@ -81,7 +107,10 @@ void EllipticProblem<dim>::run()
        dealii::QGauss<dim>(degree+4),
        dealii::VectorTools::NormType::L2_norm);
 
-    std::cout << "difference.l2_norm() = " << difference.l2_norm() << std::endl;
+    //std::cout << "difference.l2_norm() = " << difference.l2_norm() << std::endl;
+
+    this->L2errorU = difference.l2_norm();
+   
     //std::cout << "UState = " << Ustate << std::endl;    
   }
   {
@@ -100,7 +129,9 @@ void EllipticProblem<dim>::run()
        dealii::VectorTools::NormType::L2_norm
        );
     
-    std::cout << "differenceQ.l2_norm() = " << differenceQ.l2_norm() << std::endl;
+    //std::cout << "differenceQ.l2_norm() = " << differenceQ.l2_norm() << std::endl;
+    this->L2errorQ = differenceQ.l2_norm();
+    
   }
   //Make initial condition  
 
@@ -166,31 +197,74 @@ EllipticProblem<dim>::make_grid()
   
   //const unsigned int n_refinements = 2;
   dealii::Point<dim> 
-    p1,
-    p2;
-   
-  p1[0] = (-1.0) * pi;
-  p1[1] = (-1.0) * pi;
-  //p2[0] = 2;
-  //p2[1] = 2;
-  p2[0] =  pi;
-  p2[1] =  pi;
-  
-  if(3 == dim){
-    p1[2] = -2.0;
-    p2[2] =  2.0;
+    bottom_left,
+    top_right;
+
+
+  if(2==dim){
+    bottom_left = dealii::Point<dim>( (-1.0/2.0)*pi, (-1.0/2.0)*pi);
+    top_right = dealii::Point<dim>( pi, pi);
+  } else if(3 == dim){
+    bottom_left
+      = dealii::Point<dim>( (-1.0/2.0)*pi, (-1.0/2.0)*pi,(-1.0/2.0)*pi);
+    top_right = dealii::Point<dim>( pi, pi, pi);    
+  } else {
+    assert(false); // Not implemented  //TODO: Change to dealii assert
   }
-  
+
   std::vector<unsigned int> repetitions;
   for(unsigned int i = 0; i < dim; ++i){
     repetitions.emplace_back(1);
   }  
   
-  const bool colorize = true;
+  //const bool colorize = true;
+  const dealii::types::boundary_id dir_plus = 3;
+  const dealii::types::boundary_id dir_minus = 5;
+  // dealii::GridGenerator::subdivided_hyper_rectangle
+  //   (triangulation, repetitions,bottom_left,top_right, colorize);
+  
+  dealii::GridGenerator::hyper_L(triangulation,-1,1);
 
-  dealii::GridGenerator::subdivided_hyper_rectangle
-    (triangulation, repetitions,p1,p2, colorize);
+  //We have to do some gymnastics to assign the boundary indicator based
+  //on the normal vector.  We do that here.
+  {
+    dealii::QGauss<dim - 1> face_quadrature_formula(1);
+    const dealii::UpdateFlags face_update_flags = 
+      dealii::update_values
+      | dealii::update_quadrature_points
+      | dealii::update_normal_vectors;
+  
+    for(auto cell_sys = triangulation.begin_active();
+	cell_sys != triangulation.end();
+	++cell_sys){
+      //grvy_timer_begin("loop over faces");
+      for(unsigned int face_no = 0; 
+	  face_no < dealii::GeometryInfo<dim>::faces_per_cell;
+	  ++face_no){
 
+	auto face_sys = cell_sys->face(face_no);
+
+	if( face_sys->at_boundary() ){
+	  //determine what boundary and assign the correct boundary indicator.
+	  dealii::FEFaceValues<dim>
+	    fe_v_face_U(mapping,
+			feU,
+			face_quadrature_formula,
+			face_update_flags);
+	  fe_v_face_U.reinit(cell_sys,face_no);
+	  const auto normal = fe_v_face_U.normal_vector(0);
+	  if(normal * referenceDirection > 0){
+	    face_sys->set_boundary_indicator(dir_plus);
+	  } else {
+	    face_sys->set_boundary_indicator(dir_minus);
+	  }	  
+	}	
+      }
+    }	
+  }
+
+  
+  
   // dealii::GridGenerator::hyper_ball
   //   (triangulation, p1, /*radius = */ 1);
 
@@ -203,7 +277,7 @@ EllipticProblem<dim>::make_grid()
   //Interior Refinement
   unsigned int nInteriorRefinements =0;
   for(unsigned int i = 0; i < nInteriorRefinements; ++i){
-    const dealii::Point<dim> center = p1;
+    const dealii::Point<dim> center = (bottom_left+top_right)* 0.5;
     for(auto cellT = triangulation.begin_active();
 	cellT != triangulation.end();
 	++cellT){
@@ -238,7 +312,7 @@ EllipticProblem<dim>::make_grid()
   }
   
   
-  //dealii::GridTools::distort_random(0.25,triangulation,true);
+  //dealii::GridTools::distort_random(0.1,triangulation,true);
   
   {
   std::ofstream out ("grid-1.eps");
@@ -249,10 +323,14 @@ EllipticProblem<dim>::make_grid()
   
   
   // Dirichelet Boundaries
-  boundary_ids_Dir_minus.insert(0);
-  boundary_ids_Dir_minus.insert(2);
-  boundary_ids_Dir_plus.insert(1);
-  boundary_ids_Dir_plus.insert(3);
+  boundary_ids_Dir_plus.insert(dir_plus);
+  boundary_ids_Dir_minus.insert(dir_minus);
+
+  
+  
+  //boundary_ids_Dir_minus.insert(2);
+  //boundary_ids_Dir_plus.insert(3);
+  
   //boundary_ids_Dir.insert(2);
   //boundary_ids_Dir.insert(3); 
    if(3 == dim){
@@ -260,7 +338,7 @@ EllipticProblem<dim>::make_grid()
      boundary_ids_Dir_plus.insert(5);
    }
   
-  
+   
    //Neuman Boundaries   
    //boundary_ids_Neu.insert(0);
    //boundary_ids_Neu.insert(1);
@@ -368,8 +446,8 @@ EllipticProblem<dim>::make_dofs()
     n_U = dof_handlerU.n_dofs(),
     n_Q = dof_handlerQ.n_dofs(),
     n_TraceU_Dir = dof_handlerTraceU_Dir.n_dofs(),
-    n_TraceU_Neu = dof_handlerTraceU_Neu.n_dofs(),
-    n_TraceU_Rob = dof_handlerTraceU_Rob.n_dofs();
+    n_TraceU_Neu = dof_handlerTraceU_Neu.n_dofs();
+    //n_TraceU_Rob = dof_handlerTraceU_Rob.n_dofs();
 
   //TODO: Make this a dealii style assert.
   assert(n_U == n_u);   
@@ -469,12 +547,18 @@ EllipticProblem<dim>::make_dofs()
 
   Ustate = state.block(0);
   lambdaU = state.block(0);
+  for(unsigned int i = 0; i < n_eigenvalues; ++i){
+    (UeigenStates[i]).reinit(n_u);
+    (QeigenStates[i]).reinit(n_q);
+  }
   
   Qstate = state.block(1);
-  U_RHS = state.block(0);
+  //U_RHS = state.block(0);
+  U_MinusRHS = state.block(0);
   U_RHS_From_U = state.block(0);
   UdirConstraint_RHS = state.block(0);
-  Q_RHS = state.block(1);
+  //Q_RHS = state.block(1);
+  Q_MinusRHS = state.block(1);
 
   
   lagrangeU.reinit(n_TraceU_Dir);
@@ -900,9 +984,12 @@ template <int dim>
 void
 EllipticProblem<dim>::assemble_system()
 {
+
+  //grvy_timer_begin("assemble_system_inside");
   heat::real tolerance = 1e-10;
   dealii::QGauss<dim> body_quadrature_formula(degree+4);
   dealii::QGauss<dim - 1> face_quadrature_formula(degree+4);
+  
   dealii
     ::FEValues<dim> 
     fe_values(feSystem,body_quadrature_formula,
@@ -928,8 +1015,8 @@ EllipticProblem<dim>::assemble_system()
   const dealii::FEValuesExtractors::Vector FLUX(1);
  
   
-  // For now, just build everything separately.  Don't worry about saving memory
-
+  // For now, just build everything separately.  Don't worry about saving
+  
   dealii::DoFTools::map_dof_to_boundary_indices(dof_handlerQ,
 						boundary_ids_Dir_minus,
 						uDofsWithSupportOnBoundary);
@@ -1071,7 +1158,7 @@ EllipticProblem<dim>::assemble_system()
     TrU_Dir_U_Matrix   (dofs_per_cell_TraceU_Dir,dofs_per_cell_U),
     TrU_Neu_Q_Matrix   (dofs_per_cell_TraceU_Neu,dofs_per_cell_Q);
 
-  
+  //grvy_timer_end("assemble_system_inside");
   // http://www.dealii.org/developer/doxygen/deal.II/group__Iterators.html
   {
     for(auto 
@@ -1101,14 +1188,16 @@ EllipticProblem<dim>::assemble_system()
       fe_v_body_U.reinit(cell_U);
       fe_v_body_Q.reinit(cell_Q);
 
-    
+      //grvy_timer_begin("assemble MassU");
       // Assemble MassU and InverseMassU Local:
       U_U_Matrix = 0;
       U_U_Matrix_Boundary = 0;
       U_U_Matrix_Boundary_temp = 0;
       assembleMassULocal(fe_v_body_U,U_U_Matrix);    
       InsertGlobalFromLocal(cell_U,cell_U,U_U_Matrix,MassU);
-
+      //grvy_timer_end("assemble MassU");
+      
+      //grvy_timer_begin("assemble MassUInverse");
       heat::myMatrixTools::ChopMatrix(U_U_Matrix,tolerance);
       {
 	dealii::LAPACKFullMatrix<heat::real> tempLAPACKMatrix;
@@ -1118,17 +1207,25 @@ EllipticProblem<dim>::assemble_system()
       }
       
       InsertGlobalFromLocal(cell_U,cell_U,U_U_Matrix,InverseMassU);
-    
+      //grvy_timer_end("assemble MassUInverse");
+
+      
       // Assemble StiffUfromQ Local;
+      //grvy_timer_begin("assemble stiffUFromQ local");
       U_Q_Matrix = 0;
       assembleStiffUFromQLocal(fe_v_body_U,fe_v_body_Q,U_Q_Matrix);
       InsertGlobalFromLocal(cell_U,cell_Q,U_Q_Matrix,StiffUFromQ);
+      //grvy_timer_end("assemble stiffUFromQ local");
     
       //Assemble MassQ Local;
+      //grvy_timer_begin("assemble massQ local");
       Q_Q_Matrix = 0;
       assembleMassQLocal(fe_v_body_Q,Q_Q_Matrix);
       InsertGlobalFromLocal(cell_Q,cell_Q,Q_Q_Matrix,MassQ);
-    
+      //grvy_timer_end("assemble massQ local");
+
+      //Assemble InverseMassQ Local
+      //grvy_timer_begin("assemble inverseMassQ local");
       heat::myMatrixTools::ChopMatrix(Q_Q_Matrix,tolerance);
       {
 	dealii::LAPACKFullMatrix<heat::real> tempLAPACKMatrix;
@@ -1137,31 +1234,40 @@ EllipticProblem<dim>::assemble_system()
 	Q_Q_Matrix = tempLAPACKMatrix;
       }
       InsertGlobalFromLocal(cell_Q,cell_Q,Q_Q_Matrix,InverseMassQ);
-    
-    // Assemble StiffQFromU Local;
-    Q_U_Matrix = 0;
-    assembleStiffQFromULocal(fe_v_body_Q,fe_v_body_U,Q_U_Matrix);
-    InsertGlobalFromLocal(cell_Q,cell_U,Q_U_Matrix,StiffQFromU);
+      //grvy_timer_end("assemble inverseMassQ local");
+      
+      // Assemble StiffQFromU Local;
+      //grvy_timer_begin("assemble stiffQFromU local");
+      Q_U_Matrix = 0;
+      assembleStiffQFromULocal(fe_v_body_Q,fe_v_body_U,Q_U_Matrix);
+      InsertGlobalFromLocal(cell_Q,cell_U,Q_U_Matrix,StiffQFromU);
+      //grvy_timer_end("assemble stiffQFromU local");
 
-    // Assemble Source Vector    
-    U_Vector = 0;
-    assembleU_RHS_FromSourceLocal(fe_v_body_U,U_Vector);
-    //U_Vector *= -1.0;
-    InsertGlobalFromLocalVector(cell_U,U_Vector,U_RHS);
+      // Assemble Source Vector
+      //grvy_timer_begin("assemble source vector");
+      U_Vector = 0;
+      assembleU_RHS_FromSourceLocal(fe_v_body_U,U_Vector);      
+      InsertGlobalFromLocalVector(cell_U,U_Vector,U_MinusRHS);
+
+      //U_Vector *= -1.0;
+      //InsertGlobalFromLocalVector(cell_U,U_Vector,U_RHS);
+      
+      //grvy_timer_end("assemble source vector");
     
-    //Now loop over the faces;
-    for(unsigned int face_no = 0; 
+      //Now loop over the faces;
+      //grvy_timer_begin("loop over faces");
+      for(unsigned int face_no = 0; 
 	face_no < dealii::GeometryInfo<dim>::faces_per_cell;
 	++face_no){
 
       typename 
 	dealii::DoFHandler<dim>::face_iterator 
 	face_sys = cell_sys->face(face_no),
-	face_U = cell_U->face(face_no),
-	face_Q = cell_Q->face(face_no);
+	face_U = cell_U->face(face_no);
+	//face_Q = cell_Q->face(face_no);
       
       if( face_sys->at_boundary() ){
-
+	
 	dealii::FEFaceValues<dim>    
 	  fe_v_face_U(mapping, feU, face_quadrature_formula,
 		      face_update_flags);
@@ -1174,20 +1280,20 @@ EllipticProblem<dim>::assemble_system()
 
 	fe_v_face_U.reinit(cell_U,face_no);
 	fe_v_face_Q.reinit(cell_Q,face_no);	
-
-	if( boundary_ids_Dir_plus.count(face_sys->boundary_indicator()) != 0){	  
-
+	
+	
+	if( boundary_ids_Dir_plus.count(face_sys->boundary_indicator()) != 0){
+	  //Dir plus
 	  // FluxUFromQBoundary
 	  U_Q_Matrix = 0;
 	  assembleFluxUFromQBoundaryLocal(fe_v_face_U,fe_v_face_Q,U_Q_Matrix);
 	  InsertGlobalFromLocal(cell_U,cell_Q,U_Q_Matrix,FluxBoundaryUFromQ);	  
 
 	  Q_Vector = 0;
-	  assembleU_RHS_FromDirPlusLocal(fe_v_face_Q,Q_Vector);
-
-	  Q_Vector *= -1.0;	  
-	  InsertGlobalFromLocalVector(cell_Q,Q_Vector,Q_RHS);	
-
+	  assembleQ_RHS_FromDirPlusLocal(fe_v_face_Q,Q_Vector);
+	  InsertGlobalFromLocalVector(cell_Q,Q_Vector,Q_MinusRHS);
+	  //Q_Vector *= -1.0;	  
+	  //InsertGlobalFromLocalVector(cell_Q,Q_Vector,Q_RHS);		  
 	}
 
 	else if(boundary_ids_Dir_minus.count(face_sys->boundary_indicator()) != 0){	  
@@ -1278,7 +1384,7 @@ EllipticProblem<dim>::assemble_system()
 
 	  U_Vector = 0;
 	  assembleQ_RHS_FromNeuMinusLocal(fe_v_face_U, U_Vector);
-	  InsertGlobalFromLocalVector(cell_U,U_Vector,U_RHS);	
+	  InsertGlobalFromLocalVector(cell_U,U_Vector,U_MinusRHS);	
 
 	  
 	  
@@ -1310,8 +1416,9 @@ EllipticProblem<dim>::assemble_system()
 	}	
       }
       
-      else{	
+      else{ 
 	//now we know that the current face is not at a boundary
+	//grvy_timer_begin("something");
 	Assert( 
 	       cell_sys-> neighbor(face_no).state() 
 	       == dealii::IteratorState::valid,
@@ -1322,6 +1429,7 @@ EllipticProblem<dim>::assemble_system()
 	  neighbor_U = cell_U->neighbor(face_no),
 	  neighbor_Q = cell_Q->neighbor(face_no);
 	if(face_sys->has_children()){
+	  //grvy_timer_begin("face_sys->has_children()");
 	  const unsigned int neighbor2 = 
 	    cell_sys->neighbor_face_no(face_no);
 	  const unsigned int neighbor2_U = 
@@ -1391,47 +1499,65 @@ EllipticProblem<dim>::assemble_system()
 	    		       Q_U_Matrix_2);	    
 	    
 	  }
+	  //grvy_timer_end("face_sys->has_children()");
 	}
 	else{ // !(face->has_children())
 	  if(!(cell_sys->neighbor_is_coarser( face_no ))){
-	    
+	    //grvy_timer_begin("!cell_sys->neighbor_is_coarser");
 	    //Now we know that the neighbor's face is neither finer nor coarser
+
+	    //grvy_timer_begin("line1");
 	    const unsigned int neighbor2 
 	      = cell_sys->neighbor_of_neighbor(face_no);
+	    //grvy_timer_end("line1");
 	    
+	    //grvy_timer_begin("line2");
 	    dealii::FEFaceValues<dim>    
 	      fe_v_self_U(mapping,feU,face_quadrature_formula,
 			  face_update_flags);
+	    //grvy_timer_end("line2");
+
 	    
+	    //grvy_timer_begin("line3");
 	    dealii::FEFaceValues<dim>    
 	      fe_v_self_Q(mapping,
 			  feQ,
 			  face_quadrature_formula,
 			  face_update_flags);
+	    //grvy_timer_end("line3");
 	      
-	      
+
+	    //grvy_timer_begin("line4");
 	    dealii::FEFaceValues<dim> 
 	      fe_v_neig_U(mapping,
 			  feU,
 			  face_quadrature_formula,
 			  face_update_flags);
+	    //grvy_timer_end("line4");
 
+	    //grvy_timer_begin("line5");
 	    dealii::FEFaceValues<dim> 
 	      fe_v_neig_Q(mapping,
 			  feQ, 
 			  face_quadrature_formula,
 			  face_update_flags);
+	    //grvy_timer_end("line5");
 	    
 
+	    //grvy_timer_begin("line6");
 	    fe_v_self_U.reinit(cell_U,face_no);
 	    fe_v_self_Q.reinit(cell_Q,face_no);
 	    fe_v_neig_U.reinit(neighbor_U, neighbor2);
-	    fe_v_neig_Q.reinit(neighbor_Q, neighbor2);	    
-
+	    fe_v_neig_Q.reinit(neighbor_Q, neighbor2);
+	    //grvy_timer_end("line6");
+	    
+	    //grvy_timer_begin("line7");
 	    const auto 
 	      neighbor_U_for_assembly = neighbor_U,
 	      neighbor_Q_for_assembly = neighbor_Q;
+	    //grvy_timer_end("line7");
 	    
+	    //grvy_timer_begin("assemble flux locals");
 	    assembleFluxLocals
 	      (fe_v_self_U,
 	       fe_v_neig_U,
@@ -1444,8 +1570,9 @@ EllipticProblem<dim>::assemble_system()
 	       U_Q_Matrix,
 	       U_Q_Matrix_2,
 	       Q_U_Matrix,
-	       Q_U_Matrix_2);	    
-	    
+	       Q_U_Matrix_2);
+	    //grvy_timer_end("assemble flux locals");
+	    //grvy_timer_end("!cell_sys->neighbor_is_coarser"); 
 	  } else {
 	    // Ok, now we now that we are in the interior, on a face whose
 	    // neighbor is coarser.  This is the opposite of the situation
@@ -1516,12 +1643,15 @@ EllipticProblem<dim>::assemble_system()
 	       Q_U_Matrix,
 	       Q_U_Matrix_2);	    	    
 	  }
-	}      
-    } // End of face not at boundary	
+	}
+	//grvy_timer_end("something");
+      } // End of face not at boundary	
+      
+      } // End of loops through faces
 
-    } // End of loops through faces
+      //grvy_timer_end("loop over faces");
     // Now we build the Singular value decompositions for the boundary mass matrix;
-
+      //grvy_timer_begin("compute svds");
     heat::myMatrixTools::ChopMatrix(U_U_Matrix_Boundary, tolerance);
     {
       dealii::LAPACKFullMatrix<heat::real> tempLAPACKMatrix,
@@ -1560,11 +1690,12 @@ EllipticProblem<dim>::assemble_system()
       InsertGlobalFromLocal(cell_U,cell_U,U_U_Matrix_Boundary,Svd_Sigma);
 
     }
-    
+    //grvy_timer_end("compute svds");
     } // End of loops through cells
 
   }
 
+  //grvy_timer_begin("PP and QQ");
   rankBoundaryMassU = 0;
   nullityBoundaryMassU = 0;
   std::vector<unsigned int> Prows,Qrows;
@@ -1591,7 +1722,7 @@ EllipticProblem<dim>::assemble_system()
   for(unsigned int i = 0; i < nullityBoundaryMassU; ++i){
     QQ.add(i,Qrows[i],1.0);
   }
-
+  //grvy_timer_end("PP and QQ");
   //lambdaU.reinit(rankBoundaryMassU);
 
   //MassUInverseDirect.initialize(MassU);
@@ -1601,18 +1732,23 @@ EllipticProblem<dim>::assemble_system()
   
 
   //TODO:  Not the correct spot for this.
+
+  //grvy_timer_begin("TotalUFromQ summing");
   const heat::real theta = 0.0;
   TotalUFromQ.copy_from(StiffUFromQ);
   TotalUFromQ.add(-1.0 * theta,FluxCenterUFromQ);
   TotalUFromQ.add(-1.0 * (1-theta),FluxPosUFromQ);
   TotalUFromQ.add(-1.0 * (1-theta),FluxNegUFromQ);
   TotalUFromQ.add( -1.0 , FluxBoundaryUFromQ);
+  //grvy_timer_end("TotalUFromQ summing");
 
+  //grvy_timer_begin("TotalQFromU summing");
   TotalQFromU.copy_from(StiffQFromU);
   TotalQFromU.add(-1.0 * theta,FluxCenterQFromU);
   TotalQFromU.add(-1.0 * (1.0 - theta), FluxPosQFromU);
   TotalQFromU.add(-1.0 * (1.0 - theta), FluxNegQFromU);
-  TotalQFromU.add(-1.0, FluxBoundaryQFromU);    
+  TotalQFromU.add(-1.0, FluxBoundaryQFromU);
+  //grvy_timer_end("TotalQFromU summing");
 }
 
 template<int dim>
@@ -1678,8 +1814,15 @@ EllipticProblem<dim>
   std::pair< dealii::Vector<heat::real>*, std::string > temp3;
   std::vector <decltype(temp3) > list3;
 
-  list3.emplace_back(&U_RHS, "U_RHS.dat");
-  list3.emplace_back(&Q_RHS, "Q_RHS.dat");
+  //list3.emplace_back(&U_RHS, "U_RHS.dat");
+  list3.emplace_back(&U_MinusRHS, "U_MinusRHS.dat");
+  list3.emplace_back(&Ustate, "Ustate.dat");
+  list3.emplace_back(&Qstate, "Qstate.dat");
+  list3.emplace_back(&UperpNEW, "Uperp.dat");
+
+  list3.emplace_back(&UparNEW, "Upar.dat");
+  //list3.emplace_back(&Q_RHS, "Q_RHS.dat");
+  list3.emplace_back(&Q_MinusRHS, "Q_MinusRHS.dat");
   list3.emplace_back(&constraintDirU, "constraintDirU.dat");
   list3.emplace_back(&UdirConstraint_RHS, "uDirConstraint_RHS.dat");
   if(constraintNeuQ.size() != 0){
@@ -1856,15 +1999,23 @@ EllipticProblem<dim>
 ::assembleMassQLocal(const dealii::FEValues<dim> & fe_v,		    
 		     dealii::FullMatrix<heat::real> & Qi_Qi_matrix)
 {
+  //We are writing this in a more "speed optimum" way because profiling has shown this to be a bottleneck.
   const dealii::FEValuesExtractors::Vector flux(0);
   const std::vector<double> & JxW = fe_v.get_JxW_values();
   for(unsigned int point = 0; point < fe_v.n_quadrature_points; ++point){
+    const auto JxWAtPoint = JxW[point];
     for(unsigned int i = 0; i < fe_v.dofs_per_cell; ++i){
+      const auto value1 = fe_v[flux].value(i,point);
+      //const auto valueProd = JxWAtPoint * value1;
       for(unsigned int j = 0; j < fe_v.dofs_per_cell; ++j){
-	Qi_Qi_matrix(i,j) += 
-	  JxW[point] 
-	  * fe_v[flux].value(i,point)
-	  * fe_v[flux].value(j,point);
+	const auto value2 = fe_v[flux].value(j, point);
+	
+	// Qi_Qi_matrix(i,j) += 
+	//   JxW[point] 
+	//   * fe_v[flux].value(i,point)
+	//   * fe_v[flux].value(j,point);
+
+	Qi_Qi_matrix(i,j) += JxWAtPoint * value1 * value2;	 
       }
     }
   }
@@ -2121,7 +2272,9 @@ EllipticProblem<dim>
   const auto & normals 
     = fe_v_self_U.get_normal_vectors();
   
-  for(unsigned int point = 0; point < fe_v_self_U.n_quadrature_points; ++point){
+  for(unsigned int point = 0;
+      point < fe_v_self_U.n_quadrature_points;
+      ++point){    
     assert( referenceDirection * normals[point] > 0);
     for(unsigned int i = 0; i < fe_v_self_U.dofs_per_cell; ++i){
       for(unsigned int j = 0; j < fe_v_self_Q.dofs_per_cell; ++j){
@@ -2255,7 +2408,7 @@ EllipticProblem<dim>
   const auto & JxW = fe_v_self_Q.get_JxW_values();
   const auto & normals = fe_v_self_Q.get_normal_vectors();
   for(unsigned int point = 0; point < fe_v_self_Q.n_quadrature_points; ++point){
-    assert( referenceDirection * normals[point] < 0);
+      assert( referenceDirection * normals[point] < 0);
     for(unsigned int i = 0; i < fe_v_self_Q.dofs_per_cell; ++i){
       for(unsigned int j = 0; j < fe_v_self_U.dofs_per_cell; ++j){
 	Qin_Uin_matrix(i,j) += 
@@ -2378,7 +2531,7 @@ EllipticProblem<dim>
   const heat::DirichletBoundaryValues<dim> dirBC;
   const auto & JxW = fe_v_face_U.get_JxW_values();  
   for(unsigned int point = 0; point < fe_v_face_U.n_quadrature_points; ++point){
-    for(unsigned int i = 0; i < fe_v_face_U.dofs_per_cell; ++i){
+      for(unsigned int i = 0; i < fe_v_face_U.dofs_per_cell; ++i){
       U_Vector(i) +=
 	JxW[point]
 	* fe_v_face_U.shape_value(i,point)
@@ -2419,23 +2572,23 @@ EllipticProblem<dim>
 template<int dim>
 void
 EllipticProblem<dim>
-::assembleU_RHS_FromDirPlusLocal
+  ::assembleQ_RHS_FromDirPlusLocal
 (
- const dealii::FEFaceValuesBase<dim> & fe_v_face_Q,
- dealii::Vector<heat::real> & Q_Vector)
+      const dealii::FEFaceValuesBase<dim> & fe_v_face_Q,
+	dealii::Vector<heat::real> & Q_Vector)
 {
 
-  const heat::DirichletBoundaryValues<dim> dirBC;
+      const heat::DirichletBoundaryValues<dim> dirBC;
 
 
-  const dealii::FEValuesExtractors::Vector flux(0);
-  const auto & normals = fe_v_face_Q.get_normal_vectors();
-  const auto & JxW = fe_v_face_Q.get_JxW_values();
-  for(unsigned int point = 0; point < fe_v_face_Q.n_quadrature_points; ++point){
-    //TODO:  Dealii assert.
-    assert( referenceDirection * normals[point] > 0.0);
-    for(unsigned int i = 0; i < fe_v_face_Q.dofs_per_cell; ++i){
-      Q_Vector(i) += JxW[point]
+      const dealii::FEValuesExtractors::Vector flux(0);
+      const auto & normals = fe_v_face_Q.get_normal_vectors();
+      const auto & JxW = fe_v_face_Q.get_JxW_values();
+      for(unsigned int point = 0; point < fe_v_face_Q.n_quadrature_points; ++point){
+      //TODO:  Dealii assert.
+      assert( referenceDirection * normals[point] > 0.0);
+      for(unsigned int i = 0; i < fe_v_face_Q.dofs_per_cell; ++i){
+      Q_Vector(i) -= JxW[point]
 	* fe_v_face_Q[flux].value(i,point)
 	* normals[point]
 	* dirBC.value(fe_v_face_Q.quadrature_point(point));
@@ -2479,7 +2632,7 @@ EllipticProblem<dim>
   const dealii::FEValuesExtractors::Scalar density(0);
   const auto & JxW = fe_v_u.get_JxW_values();
   for(unsigned int point = 0; point < fe_v_u.n_quadrature_points; ++point){
-    for(unsigned int i = 0; i < fe_v_u.dofs_per_cell; ++i){
+      for(unsigned int i = 0; i < fe_v_u.dofs_per_cell; ++i){
       U_Vector(i) += JxW[point] * fe_v_u[density].value(i,point)
 	* sourceBV.value(fe_v_u.quadrature_point(point));
     }
@@ -2656,12 +2809,137 @@ EllipticProblem<dim>
 
 template<int dim>
 void
-EllipticProblem<dim>::ElliptSolve()
+EllipticProblem<dim>::EigenSolve(){  
+  
+  //TODO:  Assert here to make sure this is ok.  That we actually can get this number of
+  // eigenvalues
+  
+
+  
+  std::vector<dealii::Vector<heat::real> > reducedUEigenfunctions(n_eigenvalues);
+
+  for(auto&& i : reducedUEigenfunctions){
+    i.reinit(QQ.m());
+  }
+  
+  std::vector<std::complex<double> > eigenvalues(n_eigenvalues);
+  Q_UStar_SStar_inverseMassQ_S_U_Q 
+    bigProduct
+    (QQ,
+     Svd_U,
+     TotalQFromU,
+     InverseMassQ,
+     TotalUFromQ
+     );
+
+  const Q_UStar_massU_U_QStar smallProduct(QQ,Svd_U, MassU);
+  
+
+  auto Identity = dealii::PreconditionIdentity();
+  dealii::SolverControl innerControl(1000,1e-14);
+
+  dealii::IterativeInverse<dealii::Vector<heat::real>> bigProductInverse;
+  bigProductInverse.initialize(bigProduct, Identity);
+  bigProductInverse.solver.select("cg");
+  bigProductInverse.solver.set_control(innerControl);
+
+  
+  
+  
+  const unsigned int num_arnoldi_vectors = 2 * n_eigenvalues + 2;
+  dealii::ArpackSolver::AdditionalData additional_data
+    (num_arnoldi_vectors,
+     dealii::ArpackSolver::WhichEigenvalues::largest_real_part
+     );
+
+  dealii::SolverControl solver_control(dof_handler.n_dofs(), 1e-14);
+  
+  dealii::ArpackSolver eigenSolver(solver_control, additional_data);
+  eigenSolver.solve(
+		    bigProduct,
+		    smallProduct,
+		    bigProductInverse,
+		    eigenvalues,
+		    reducedUEigenfunctions,
+		    eigenvalues.size() );
+  
+  
+  for(unsigned int i = 0; i < eigenvalues.size(); ++i){
+    dealii::Vector<heat::real> temp1( QQ.n() );
+    dealii::Vector<heat::real> temp2( InverseMassQ.m() );
+    QQ.Tvmult(temp1, reducedUEigenfunctions[i]);
+    Svd_U.vmult(UeigenStates[i], temp1);
+    
+    TotalQFromU.vmult(temp2, UeigenStates[i]);
+    InverseMassQ.vmult(QeigenStates[i], temp2);    
+    QeigenStates[i] *= -1.0;
+  }  
+}
+
+template <int dim>
+void EllipticProblem<dim>::output_results_eigensystem ()
 {
-  //Find Uperp;
-  dealii::Vector<heat::real> uPerp(rankBoundaryMassU);
+  typedef dealii::DataComponentInterpretation::DataComponentInterpretation DCI_type;
+    
+  dealii::DataOut<dim> dataOutSys;      
+  dataOutSys.attach_dof_handler (dof_handler);
+
+  std::vector<dealii::BlockVector<heat::real> > EigenStates(n_eigenvalues);
+
+  for (unsigned int i=0; i<UeigenStates.size(); ++i){
+
+    EigenStates[i].reinit(2);
+    EigenStates[i].block(0).reinit(UeigenStates[i].size());
+    EigenStates[i].block(1).reinit(QeigenStates[i].size());
+    EigenStates[i].collect_sizes();
+    
+    EigenStates[i].block(0) = UeigenStates[i];
+    EigenStates[i].block(1) = QeigenStates[i];    
+    
+
+    
+    std::vector<std::string> SolutionNames;
+    std::vector<DCI_type> DataComponentInterpretation;
+
+    SolutionNames.emplace_back("Density_" + dealii::Utilities::int_to_string(i,2) );	
+    DataComponentInterpretation
+      .push_back(dealii
+		 ::DataComponentInterpretation
+		 ::component_is_scalar);
+
+      
+    for(unsigned int j = 0; j < dim; ++j){
+      SolutionNames.emplace_back("DiffusiveCurrent" + dealii::Utilities::int_to_string(j,1)
+				 + "_" + dealii::Utilities::int_to_string(i,2) );
+      DataComponentInterpretation
+	.push_back(dealii::DataComponentInterpretation::component_is_scalar);
+    }
+
+    
+    dataOutSys.add_data_vector(EigenStates[i],
+			       SolutionNames,
+			       dealii::DataOut<dim>::type_dof_data,
+			       DataComponentInterpretation);
+      
+  }    
+  dataOutSys.build_patches (degree*4);
+  std::ofstream output ("eigenvectors.vtk");
+  dataOutSys.write_vtk (output);
+}
+
+
+
+template<int dim>
+void
+EllipticProblem<dim>::ElliptSolve(){
+  //grvy_timer_begin("find Uperp");
+  
+      //Find Uperp;
+      dealii::Vector<heat::real> uPerp(rankBoundaryMassU);
+      UperpNEW.reinit(rankBoundaryMassU);
   {
-    PSigmaPStar PSigmaPStar_Instance(PP,Svd_Sigma);
+      //Ustate = 0;
+      PSigmaPStar PSigmaPStar_Instance(PP,Svd_Sigma);
     
     dealii::Vector<heat::real>
       temp1(Svd_Sigma.n()),
@@ -2671,22 +2949,23 @@ EllipticProblem<dim>::ElliptSolve()
     Svd_U.Tvmult(temp1, UdirConstraint_RHS);
     PP.vmult(temp2,temp1);
 
-    dealii::SolverControl SolverControl(10000,1e-12);
+    dealii::SolverControl SolverControl(10000,1e-14);
     dealii::SolverCG<> cg(SolverControl);
 
 
-    cg.solve(PSigmaPStar_Instance, uPerp, temp2,
+    cg.solve(PSigmaPStar_Instance, UperpNEW, temp2,
 	     dealii::PreconditionIdentity() );
 
-    PP.Tvmult(temp3,uPerp);
-    Svd_U.vmult(Ustate, temp3);
-    //std::cout << "uPerp = " << uPerp << std::endl;
+    
+    PP.Tvmult(temp3,UperpNEW);
+    Svd_U.vmult(Ustate, temp3);    
     
   }
 
   
   //Find Upar;
   dealii::Vector<heat::real> uPar(nullityBoundaryMassU);
+  UparNEW.reinit(nullityBoundaryMassU);
   {
     dealii::Vector<heat::real>
       temp1( rankBoundaryMassU + nullityBoundaryMassU ),
@@ -2699,58 +2978,63 @@ EllipticProblem<dim>::ElliptSolve()
       temp8( QQ.n() ),
       temp9( Svd_U.m() );      
       
+    //grvy_timer_begin("uPar RHS");
+    PP.Tvmult(temp1, UperpNEW);    
+    Svd_U.vmult(temp2,temp1);    
+    TotalQFromU.vmult(temp3, temp2);
+    temp3 += Q_MinusRHS;
+    InverseMassQ.vmult(temp4, temp3);
+    TotalQFromU.Tvmult(temp5,temp4);
+    temp5 += U_MinusRHS;
+    Svd_U.Tvmult(temp6, temp5);
+    QQ.vmult(temp7, temp6);
+    temp7 *= -1.0;     
+    //grvy_timer_end("uPar RHS");
 
-    PP.Tvmult(temp1,uPerp);
-    Svd_U.vmult(temp2,temp1);
-    TotalQFromU.vmult(temp3,temp2);
-    temp3.add(Q_RHS);    
-    InverseMassQ.vmult(temp4,temp3);
-    TotalUFromQ.vmult(temp5,temp4);
-    temp5 *= -1.0;
-    temp5.add(U_RHS);
-    Svd_U.Tvmult(temp6,temp5);
-    QQ.vmult(temp7,temp6);
-    temp7 *= -1.0;
 
-    //std::cout << "temp1 = " << temp1 << std::endl;
-
-    //std::cout << "temp3 = " << temp3 << std::endl;
-    //std::cout << "temp5 = " << temp5 << std::endl;
-
-    //std::cout << "temp7 = " << temp7 << std::endl;
     
     Q_UStar_SStar_inverseMassQ_S_U_Q 
-      bigProduct(QQ,
-		 Svd_U,
-		 TotalQFromU,
-		 InverseMassQ,
-		 TotalUFromQ
-		 ); 
+      bigProduct
+      (QQ,
+	Svd_U,
+	TotalQFromU,
+	InverseMassQ,
+	TotalUFromQ
+	); 
 
     dealii::SolverControl SolverControl(10000, 1e-16);
     dealii::SolverCG<>    cg(SolverControl);
 
-    cg.solve(bigProduct, uPar, temp7, dealii::PreconditionIdentity() );
-    QQ.Tvmult(temp8, uPar);
+    //grvy_timer_begin("Upar Solve");
+    cg.solve(bigProduct, UparNEW, temp7, dealii::PreconditionIdentity() );
+    //grvy_timer_end("Upar Solve");
+
+    
+    
+    QQ.Tvmult(temp8, UparNEW);
     Svd_U.vmult(temp9,temp8);
     Ustate += temp9;    
+
     
   }  
-
+  //grvy_timer_end("find Upar");
   //Compute Q;
-
+  //grvy_timer_begin("compute Q");
   {
     dealii::Vector<heat::real>
       temp1(TotalQFromU.m() );
-
+    temp1 = 0;
     TotalQFromU.vmult(temp1,Ustate);
-    temp1 += Q_RHS;
+    temp1 += Q_MinusRHS;
     temp1 *= -1.0;
-    InverseMassQ.vmult(Qstate,temp1);    
+    InverseMassQ.vmult(Qstate,temp1);
       
   }
+  //grvy_timer_end("compute Q");
 
+  
   //Compute lambda (don't really care though);
+  //grvy_timer_begin("compute lambda");
   {
     dealii::Vector<heat::real>
       temp1( TotalUFromQ.m() ),
@@ -2761,14 +3045,14 @@ EllipticProblem<dim>::ElliptSolve()
     
 
     TotalUFromQ.vmult( temp1, Qstate );
-    temp1 -= U_RHS;
+    temp1 += U_MinusRHS;
     Svd_U.Tvmult( temp2, temp1 );
     PP.vmult( temp3, temp2);
 
 
     PSigmaPStar PSigmaPStar_Instance(PP,Svd_Sigma);
 
-    dealii::SolverControl SolverControl(10000,1e-12);
+    dealii::SolverControl SolverControl(10000,1e-16);
     dealii::SolverCG<> cg(SolverControl);
 
     cg.solve(PSigmaPStar_Instance, lambdaHat, temp3,
@@ -2778,6 +3062,7 @@ EllipticProblem<dim>::ElliptSolve()
     Svd_U.vmult(lambdaU,temp4);
     
   }
+  //grvy_timer_end("compute lambda");
 }
 
 // template<int dim>
@@ -3421,12 +3706,13 @@ EllipticProblem<dim>::PrintState(const unsigned int timeStampNumber)
 
     for(unsigned int i = 0; i < dim; ++i){
       std::string name = "DiffusiveCurrent";
-      //name += //dealii::Utilities::int_to_string(i,1);
+      name += dealii::Utilities::int_to_string(i,1);
       SolutionNames.push_back(name);
       DataComponentInterpretation
 	.push_back(dealii
-		   ::DataComponentInterpretation
-		   ::component_is_part_of_vector);      
+	::DataComponentInterpretation
+	::component_is_scalar);
+	//::component_is_part_of_vector);      
     }
     
     
@@ -3438,6 +3724,7 @@ EllipticProblem<dim>::PrintState(const unsigned int timeStampNumber)
     //We should just use a vector that is local to this function
     //store the state, i think.  Either that, or we should have a
     //different function set the state.
+
     
     state.block(0) = Ustate;
     state.block(1) = Qstate;
@@ -3459,7 +3746,7 @@ EllipticProblem<dim>::PrintState(const unsigned int timeStampNumber)
   }
 }
 
-
+ 
 } // end namespace heat
 
 template class heat::EllipticProblem<2>;

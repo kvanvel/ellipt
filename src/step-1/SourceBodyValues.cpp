@@ -8,7 +8,7 @@ SourceBodyValues<dim>::value(const dealii::Point<dim> & p,
 				    const unsigned int component) const
 {
   Assert(component == 0, dealii::ExcInternalError() );
-  return -2.0 * sin(p[0]) * cos(p[1]);
+  return -2.0 * sin(p[0]) * sin(p[1]);
   
 }
 
