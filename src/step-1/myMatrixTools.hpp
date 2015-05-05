@@ -1,7 +1,12 @@
-#include "globals.hpp"
-
 #ifndef _MYMATRIXTOOLS_H__
 #define _MYMATRIXTOOLS_H__
+
+#include "globals.hpp"
+#include "EllipticProblem.hpp"
+#include <deal.II/base/exceptions.h>
+#include <deal.II/lac/sparse_matrix_ez.h>
+
+
 namespace heat{
 namespace myMatrixTools{
 

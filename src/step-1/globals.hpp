@@ -3,9 +3,11 @@
 
 #include <grvy.h>
 
+
 namespace heat{
 
 typedef double real;  //Interested in changing from double to floats
+  
 
 }
 

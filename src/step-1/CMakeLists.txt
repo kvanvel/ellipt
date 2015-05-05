@@ -19,8 +19,13 @@ SET(TARGET_SRC
   PSigmaPStar.cpp
   Q_UStar_SStar_inverseMassQ_S_U_Q.cpp
   Q_UStar_massU_U_QStar.cpp
+  SS_UStar_massQ_U_SSStar.cpp
+  SS_UStar_TotalQFromU_U_QQStar.cpp
   ApproximateSchurComplement.cpp
   SchurComplementPoisson.cpp
+  SchurComplementNEW.cpp
+  LDGIntegrator.cpp
+  LDGIntegratorKENT.cpp
   ApproximateSchurComplementPoisson.cpp
   NeumanBoundaryValuesPoisson.cpp
   # You can specify additional files here!

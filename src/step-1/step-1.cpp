@@ -13,15 +13,15 @@ main ()
   dealii::deallog.depth_console(0);
   
   for(unsigned int order = 3; order <= 3; ++order){
-    dealii::ConvergenceTable convergenceTable;    
+    dealii::ConvergenceTable convergenceTable;
 
     std::cout << "Order = " << order << std::endl;
     
-    for(unsigned int refinements = 0; refinements <=0; ++refinements){
+    for(unsigned int refinements = 0; refinements <= 0; ++refinements){
       if( (0 == order) && ( 0 == refinements)){
 	continue;
       }
-      //std::cout << "Refinements = " << refinements << std::endl;
+      std::cout << "Refinements = " << refinements << std::endl;
       convergenceTable.add_value("refinements",refinements);
 
       heat::EllipticProblem<2> EllipticProblem(order,refinements);

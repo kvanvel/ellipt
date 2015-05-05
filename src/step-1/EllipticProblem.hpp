@@ -6,8 +6,11 @@
 #include <iomanip>
 #include <stdlib.h>
 #include <complex>
+#include <limits>
+
 
 #include <boost/math/constants/constants.hpp>
+
 
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/dofs/dof_renumbering.h>
@@ -27,11 +30,22 @@
 #include <deal.II/lac/lapack_full_matrix.h>
 #include <deal.II/lac/sparse_direct.h>
 #include <deal.II/lac/sparse_matrix.h>
+#include <deal.II/lac/schur_matrix.h>
 #include <deal.II/lac/identity_matrix.h>
 #include <deal.II/lac/arpack_solver.h>
+#include <deal.II/lac/transpose_matrix.h>
+#include <deal.II/lac/pointer_matrix.h>
+#include <deal.II/lac/linear_operator.h>
 #include <deal.II/numerics/vector_tools.h>
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/matrix_tools.h>
+
+#include <deal.II/meshworker/dof_info.h>
+#include <deal.II/meshworker/integration_info.h> 
+#include <deal.II/meshworker/simple.h>
+#include <deal.II/meshworker/assembler.h>
+#include <deal.II/meshworker/loop.h>
+
 
 #include "globals.hpp"
 
@@ -49,6 +63,10 @@ public:
 private:
   void 
   assemble_system();
+
+  void 
+  assemble_system_UGLY();
+  
 
   void
   print_system();
@@ -105,6 +123,10 @@ private:
   void 
   assembleMassQLocal(const dealii::FEValues<dim> &fe_v,
 		     dealii::FullMatrix<heat::real> &ui_vi_matrix);
+
+  void
+  assembleBoundaryMassQLocal(const dealii::FEFaceValuesBase<dim> & fe_v,
+			     dealii::FullMatrix<heat::real> & pi_qj_matrix);
   
   void 
   assembleStiffUFromQLocal(const dealii::FEValues<dim> & fe_v_U,
@@ -265,6 +287,10 @@ private:
    const dealii::FEFaceValuesBase<dim> & fe_v_face_Q,
    dealii::Vector<heat::real> & TrU_Q_Vector);
 
+  void
+  assembleConstraintQNeuPlusLocalNOTRACE
+  (const dealii::FEFaceValuesBase<dim> & fe_v_face_Q,
+   dealii::Vector<heat::real> & Q_Vector);
 
   void
   assembleQ_RHS_FromNeuMinusLocal
@@ -303,7 +329,13 @@ private:
   ElliptSolve();
 
   void
+  ElliptSolveNEW();
+
+  void
   EigenSolve();
+
+  void
+  EigenSolveNEW();
   
   void
   USolve();
@@ -395,11 +427,15 @@ private:
   
   dealii::Point<dim> referenceDirection;
   
+  
+  
   const unsigned int degree;
   const unsigned int refinements;
   const unsigned int n_eigenvalues;
   unsigned int rankBoundaryMassU;
   unsigned int nullityBoundaryMassU;
+  unsigned int rankBoundaryMassQ;
+  unsigned int nullityBoundaryMassQ;
   
   dealii::Triangulation<dim> triangulation;
   dealii::Triangulation<dim-1,dim> triangulation_Dir;
@@ -434,6 +470,10 @@ private:
   
   dealii::BlockSparsityPattern sparsity_pattern;
   dealii::BlockSparseMatrix<heat::real> system_matrix;
+  dealii::BlockSparseMatrix<heat::real> system_matrix2;
+  dealii::BlockSparseMatrix<heat::real> system_matrix3;
+  dealii::BlockSparseMatrix<heat::real> system_matrix4;
+  
 
   dealii::SparsityPattern 
     MassUSparsityPattern,
@@ -470,9 +510,9 @@ private:
   dealii::SparseMatrix<heat::real>
   InverseMassU,
     MassU,
-    BoundaryMassU,
-    Svd_U,
-    Svd_Sigma,
+    BoundaryMassU,    
+    Svd_U_for_Dir,
+    Svd_Sigma_for_Dir,
     StiffUFromQ,
     FluxPosUFromQ,
     FluxNegUFromQ,
@@ -480,7 +520,11 @@ private:
     FluxBoundaryUFromQ,
     TotalUFromQ,
     InverseMassQ,
+    InverseMassQCholesky,
     MassQ,
+    BoundaryMassQ,
+    Svd_U_for_Neu,
+    Svd_Sigma_for_Neu,
     StiffQFromU,
     FluxPosQFromU,
     FluxNegQFromU,
@@ -502,11 +546,14 @@ private:
     TraceUDir,
     TraceQNeu,
     PP,
-    QQ;
+    QQ,
+    RR,
+    SS;
   
-    
   
   dealii::BlockVector<heat::real> state;
+  dealii::BlockVector<heat::real> BlockMinusRHS;
+  dealii::BlockVector<heat::real> BlockConstraints;
   
   dealii::Vector<heat::real> Ustate;
   dealii::Vector<heat::real> UperpNEW;
@@ -517,12 +564,15 @@ private:
   dealii::Vector<heat::real> lambdaU;
   dealii::Vector<heat::real> constraintDirU;
   dealii::Vector<heat::real> Qstate;
+  dealii::Vector<heat::real> QperpNEW;
+  dealii::Vector<heat::real> QparNEW;
   dealii::Vector<heat::real> lagrangeQ;
   dealii::Vector<heat::real> constraintNeuQ; //And Rob?
   //dealii::Vector<heat::real> U_RHS;
   dealii::Vector<heat::real> U_MinusRHS;
   dealii::Vector<heat::real> U_RHS_From_U;
   dealii::Vector<heat::real> UdirConstraint_RHS;
+  dealii::Vector<heat::real> QneuConstraint_RHS;
   //dealii::Vector<heat::real> Q_RHS;
   dealii::Vector<heat::real> Q_MinusRHS;
   //dealii::Vector<heat::real> PotState;
@@ -533,8 +583,8 @@ private:
   std::vector< dealii::Vector<heat::real> > UeigenStates;
   std::vector< dealii::Vector<heat::real> > QeigenStates;
   
-  dealii::MappingQ1<dim> mapping;
-  dealii::MappingQ1<dim-1,dim> faceMapping;
+  dealii::MappingQ<dim> mapping;
+  dealii::MappingQ<dim-1,dim> faceMapping;
 
   std::vector<dealii::types::global_dof_index >
     uDofsWithSupportOnBoundary,
