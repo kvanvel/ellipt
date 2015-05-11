@@ -47,7 +47,7 @@ PrintMatrixMarket(const SPARSEMATRIX & In,
 		  heat::real threshold
 		  )
 {
-  Assert( In.m() != 0, dealii::ExcNotInitialized() );
+  Assert( In.m() != 0,  dealii::ExcNotInitialized() );
   Assert( threshold >0, dealii::ExcMessage("Negative threshold!") );
   
   // Print the header

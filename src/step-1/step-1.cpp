@@ -17,7 +17,7 @@ main ()
 
     std::cout << "Order = " << order << std::endl;
     
-    for(unsigned int refinements = 0; refinements <= 0; ++refinements){
+    for(unsigned int refinements = 3; refinements <= 3; ++refinements){
       if( (0 == order) && ( 0 == refinements)){
 	continue;
       }

@@ -26,6 +26,7 @@ SET(TARGET_SRC
   SchurComplementNEW.cpp
   LDGIntegrator.cpp
   LDGIntegratorKENT.cpp
+  LDGErrorIntegrator.cpp
   ApproximateSchurComplementPoisson.cpp
   NeumanBoundaryValuesPoisson.cpp
   # You can specify additional files here!

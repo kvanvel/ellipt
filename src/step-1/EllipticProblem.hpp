@@ -20,12 +20,14 @@
 #include <deal.II/grid/tria.h>
 #include <deal.II/grid/tria_boundary_lib.h>
 #include <deal.II/grid/grid_out.h>
+#include <deal.II/grid/grid_refinement.h>
 #include <deal.II/fe/fe_dgp.h>
 #include <deal.II/fe/fe_dgq.h>
 #include <deal.II/fe/mapping_q1.h>
 #include <deal.II/fe/fe_raviart_thomas.h>
 #include <deal.II/fe/fe_system.h>
 #include <deal.II/fe/fe_values.h>
+#include <deal.II/fe/fe_tools.h>
 #include <deal.II/lac/block_sparse_matrix.h>
 #include <deal.II/lac/lapack_full_matrix.h>
 #include <deal.II/lac/sparse_direct.h>
@@ -39,13 +41,13 @@
 #include <deal.II/numerics/vector_tools.h>
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/matrix_tools.h>
+#include <deal.II/numerics/solution_transfer.h>
 
 #include <deal.II/meshworker/dof_info.h>
 #include <deal.II/meshworker/integration_info.h> 
 #include <deal.II/meshworker/simple.h>
 #include <deal.II/meshworker/assembler.h>
 #include <deal.II/meshworker/loop.h>
-
 
 #include "globals.hpp"
 
@@ -61,12 +63,17 @@ public:
   heat::real L2errorU, L2errorQ;
 
 private:
+  void
+  assemble_system_PreProcess();
+  
   void 
-  assemble_system();
+  assemble_system_OLD();
 
   void 
   assemble_system_UGLY();
-  
+
+  void
+  assemble_system_PostProcess();  
 
   void
   print_system();
@@ -76,9 +83,13 @@ private:
   
   void 
   make_grid();
+
   
   void 
-  make_dofs();
+  make_dofs_first_time();
+
+  void
+  make_dofs_every_time();
   
   void
   report_dofs();
@@ -326,20 +337,25 @@ private:
   makeQ_RHS_FromU();
 
   void
-  ElliptSolve();
+  ElliptSolveOLD();
 
   void
-  ElliptSolveNEW();
+  ElliptSolve();
 
   void
   EigenSolve();
 
   void
   EigenSolveNEW();
+
+  void
+  EstimateEllipticError();
+
+  void
+  EigenSolve_UGLY();
   
   void
   USolve();
-
    
   void
   QSolve_NEW(dealii::Vector<heat::real> & Qdest,
@@ -425,9 +441,7 @@ private:
     NeuVolumeToSurfaceTriangulationMap,
     RobVolumeToSurfaceTriangulationMap;
   
-  dealii::Point<dim> referenceDirection;
-  
-  
+  dealii::Point<dim> referenceDirection;  
   
   const unsigned int degree;
   const unsigned int refinements;
@@ -469,11 +483,7 @@ private:
   std::set<dealii::types::boundary_id> boundary_ids_Rob_plus, boundary_ids_Rob_minus;
   
   dealii::BlockSparsityPattern sparsity_pattern;
-  dealii::BlockSparseMatrix<heat::real> system_matrix;
-  dealii::BlockSparseMatrix<heat::real> system_matrix2;
-  dealii::BlockSparseMatrix<heat::real> system_matrix3;
-  dealii::BlockSparseMatrix<heat::real> system_matrix4;
-  
+  dealii::BlockSparseMatrix<heat::real> system_matrix;  
 
   dealii::SparsityPattern 
     MassUSparsityPattern,
@@ -495,13 +505,7 @@ private:
     TraceUDirSparsityPattern,
     TraceQNeuSparsityPattern,
     TraceQRobSparsityPattern,
-  // MassElecSparsityPattern,
-  // StiffElecFromPotSparsityPattern,
-  // StiffPotFromElecSparsityPattern,
-  // PotFromUSparsityPattern,
-   TRACE_U_DIR_NEW_SparsityPattern;
-
-  
+    TRACE_U_DIR_NEW_SparsityPattern;  
   
   // std::vector<std::vector<unsigned int> > MassUCols;
   // std::vector<std::vector<std::pair<unsigned int, heat::real> > >  
@@ -514,6 +518,8 @@ private:
     Svd_U_for_Dir,
     Svd_Sigma_for_Dir,
     StiffUFromQ,
+    NumericalFluxUFromQ,
+    NumericalFluxUFromQBoundary,
     FluxPosUFromQ,
     FluxNegUFromQ,
     FluxCenterUFromQ,
@@ -526,6 +532,8 @@ private:
     Svd_U_for_Neu,
     Svd_Sigma_for_Neu,
     StiffQFromU,
+    NumericalFluxQFromU,
+    NumericalFluxQFromUBoundary,
     FluxPosQFromU,
     FluxNegQFromU,
     FluxCenterQFromU,
@@ -537,11 +545,21 @@ private:
   //PotFromU,
   TRACE_U_DIR_NEW
     ;
+
+
   
   dealii::SparseDirectUMFPACK MassUInverseDirect;
   dealii::SparseDirectUMFPACK MassQInverseDirect;
   //dealii::SparseDirectUMFPACK MassElecInverseDirect;
   
+  dealii::MatrixBlockVector<dealii::SparseMatrix<heat::real> > SystemMatricesCollection;
+
+  // dealii::SmartPointer<dealii::SparseMatrix<heat::real> > 
+  //   MassUNEWptr,
+  //   MassQNEWprt,  
+
+  dealii::AnyData SystemRHSsAndConstraints;
+
   dealii::SparseMatrixEZ<heat::real>
     TraceUDir,
     TraceQNeu,
@@ -554,10 +572,14 @@ private:
   dealii::BlockVector<heat::real> state;
   dealii::BlockVector<heat::real> BlockMinusRHS;
   dealii::BlockVector<heat::real> BlockConstraints;
+  dealii::BlockVector<heat::real> EstimatedError;
   
   dealii::Vector<heat::real> Ustate;
   dealii::Vector<heat::real> UperpNEW;
   dealii::Vector<heat::real> UparNEW;
+  dealii::Vector<heat::real> UstateTransferedFromOld;
+  dealii::Vector<heat::real> MuStateTransferedFromOld;
+  dealii::Vector<heat::real> LambdaStateTransferedFromOld;
   //dealii::Vector<heat::real> DeltaUState;
   //dealii::Vector<heat::real> UStateDot;
   dealii::Vector<heat::real> lagrangeU;
@@ -566,6 +588,11 @@ private:
   dealii::Vector<heat::real> Qstate;
   dealii::Vector<heat::real> QperpNEW;
   dealii::Vector<heat::real> QparNEW;
+  dealii::Vector<heat::real> QStateTransferedFromOld;
+  dealii::Vector<heat::real> lambdaHat_UGLY;
+  dealii::Vector<heat::real> lambda_UGLY;
+  dealii::Vector<heat::real> mu_UGLY;
+  dealii::Vector<heat::real> muHat_UGLY;  
   dealii::Vector<heat::real> lagrangeQ;
   dealii::Vector<heat::real> constraintNeuQ; //And Rob?
   //dealii::Vector<heat::real> U_RHS;
@@ -583,12 +610,12 @@ private:
   std::vector< dealii::Vector<heat::real> > UeigenStates;
   std::vector< dealii::Vector<heat::real> > QeigenStates;
   
-  dealii::MappingQ<dim> mapping;
-  dealii::MappingQ<dim-1,dim> faceMapping;
+  dealii::MappingQ1<dim> mapping;
+  dealii::MappingQ1<dim-1,dim> faceMapping;
 
-  std::vector<dealii::types::global_dof_index >
-    uDofsWithSupportOnBoundary,
-    qDotsWithOrthongalSupportOnBoundary;
+  // std::vector<dealii::types::global_dof_index >
+  //   uDofsWithSupportOnBoundary,
+  //   qDotsWithOrthongalSupportOnBoundary;
 
   
 };  

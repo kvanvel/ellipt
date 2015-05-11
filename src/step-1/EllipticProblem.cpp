@@ -17,6 +17,7 @@
 #include "ApproximateSchurComplementPoisson.hpp"
 #include "LDGIntegrator.hpp"
 #include "LDGIntegratorKENT.hpp"
+#include "LDGErrorIntegrator.hpp"
 #include "InverseDiffusivity.hpp"
 #include "myMatrixTools.hpp"
 #include "zero_matrix.hpp"
@@ -49,10 +50,12 @@ EllipticProblem<dim>::EllipticProblem(const unsigned int degreeIn,
   dof_handlerTraceU_Dir(triangulation_Dir),
   dof_handlerTraceU_Neu(triangulation_Neu),
   dof_handlerTraceU_Rob(triangulation_Rob),
+  EstimatedError(1),
   UeigenStates(n_eigenvalues),
-  QeigenStates(n_eigenvalues),
-  mapping(degree+2),
-  faceMapping(degree+2)
+  QeigenStates(n_eigenvalues)
+  
+  //mapping(degree+2),
+  //  faceMapping(degree+2)
 {}
 
 template<int dim>
@@ -62,51 +65,149 @@ void EllipticProblem<dim>::run()
   //grvy_timer_begin("make_grid");
   make_grid();
   //grvy_timer_end("make_grid");
+  
 
-  //grvy_timer_begin("make_dofs");
-  make_dofs();
-  //grvy_timer_end("make_dofs");
+  make_dofs_first_time();  
+  
 
   //grvy_timer_begin("report_dofs");
-  report_dofs();
+  //report_dofs();
   //grvy_timer_end("report_dofs");
+  
+  //grvy_timer_begin("PreProcess");
 
+  //print_system();
+  
+  //grvy_timer_end("PreProcess");
+  
   //grvy_timer_begin("assemble_system");
-  assemble_system();  
+  //assemble_system_OLD();
   //grvy_timer_end("assemble_system");
 
+  assemble_system_PreProcess();
   assemble_system_UGLY();
+  assemble_system_PostProcess();
   
-  assert(false);
-  //DistillMatrices
-  //grvy_timer_begin("Distill Matrices");
+  //DistillMatrices  
   heat::myMatrixTools::DistillMatrix(MassU,MassUSparsityPattern);
   heat::myMatrixTools::DistillMatrix(InverseMassU,InverseMassUSparsityPattern);
   heat::myMatrixTools::DistillMatrix(TotalUFromQ,TotalUFromQSparsityPattern);
   heat::myMatrixTools::DistillMatrix(MassQ, MassQSparsityPattern);
   heat::myMatrixTools::DistillMatrix(InverseMassQ,
-				     InverseMassQSparsityPattern);
+  				     InverseMassQSparsityPattern);
   heat::myMatrixTools::DistillMatrix(TotalQFromU,
-				     TotalQFromUSparsityPattern);
-  
-  print_system();
-  
-  //assert(false);
-    
+    TotalQFromUSparsityPattern);
+
   //grvy_timer_end("Distill Matrices");
+  
+  //print_system();
 
   //grvy_timer_begin("ElliptSolve");
-  //ElliptSolveNEW();
   
-  //grvy_timer_end("ElliptSolve");
+  ElliptSolve();
 
-  //PrintState(0);
+  //print_system();
 
-  EigenSolveNEW();
+  // Ustate = 0;
+  // Qstate = 10;
+
+  state.block(0) = Ustate;
+  state.block(1) = Qstate;
   
-  output_results_eigensystem();
+  //grvy_timer_begin("ElliptSolve");
+  
+  PrintState(0);  
+  EstimateEllipticError();
 
-  assert(false);
+  auto StateOLD = state;
+  auto UStateOLD = state.block(0);
+  auto QStateOLD = state.block(1);
+  auto lambda_UGLY_OLD = lambda_UGLY;
+  auto mu_UGLY_OLD = mu_UGLY;
+
+  dealii::SolutionTransfer<dim,dealii::Vector<heat::real> >
+    U_soltrans(dof_handlerU);
+
+  dealii::SolutionTransfer<dim,dealii::Vector<heat::real> >
+    Q_soltrans(dof_handlerQ);  
+  
+  dealii::GridRefinement
+    ::refine_and_coarsen_fixed_number(triangulation,
+				      EstimatedError.block(0),
+				      0.3,
+				      0);
+    
+  triangulation.prepare_coarsening_and_refinement();
+  U_soltrans.prepare_for_coarsening_and_refinement(UStateOLD);
+  Q_soltrans.prepare_for_coarsening_and_refinement(QStateOLD);
+
+  triangulation.execute_coarsening_and_refinement();
+
+  UstateTransferedFromOld.reinit(dof_handlerU.n_dofs());  
+  QStateTransferedFromOld.reinit(dof_handlerQ.n_dofs());
+  MuStateTransferedFromOld.reinit(dof_handlerQ.n_dofs());
+  LambdaStateTransferedFromOld.reinit(dof_handlerU.n_dofs());
+
+  make_dofs_every_time();
+  
+  //assert(false);
+  
+  U_soltrans.interpolate(UStateOLD, Ustate);  
+  U_soltrans.interpolate(lambda_UGLY_OLD, lambda_UGLY);  
+  Q_soltrans.interpolate(QStateOLD, Qstate);  
+  Q_soltrans.interpolate(mu_UGLY_OLD, mu_UGLY);
+  
+  UstateTransferedFromOld = Ustate;
+  QStateTransferedFromOld = Qstate;
+  LambdaStateTransferedFromOld = lambda_UGLY;
+  MuStateTransferedFromOld = mu_UGLY;
+
+  state.block(0) = Ustate;
+  state.block(1) = Qstate;
+  PrintState(1);    
+
+  assemble_system_PreProcess();
+  assemble_system_UGLY();
+  assemble_system_PostProcess();
+
+  heat::myMatrixTools::DistillMatrix(MassU,MassUSparsityPattern);
+  heat::myMatrixTools::DistillMatrix(InverseMassU,InverseMassUSparsityPattern);
+  heat::myMatrixTools::DistillMatrix(TotalUFromQ,TotalUFromQSparsityPattern);
+  heat::myMatrixTools::DistillMatrix(MassQ, MassQSparsityPattern);
+
+  heat
+    ::myMatrixTools
+    ::DistillMatrix(InverseMassQ,
+		    InverseMassQSparsityPattern);
+  heat
+    ::myMatrixTools
+    ::DistillMatrix(TotalQFromU,
+		    TotalQFromUSparsityPattern);
+
+  Ustate = UstateTransferedFromOld;
+  Qstate = QStateTransferedFromOld;
+  mu_UGLY = MuStateTransferedFromOld;
+  lambda_UGLY = LambdaStateTransferedFromOld;    
+
+  //report_dofs();
+
+  //Ustate = 0;
+  //Qstate = 0;
+  
+  ElliptSolve();
+
+  //ElliptSolve();   
+  
+  Ustate -= UstateTransferedFromOld;
+  Qstate -= QStateTransferedFromOld;
+
+  PrintState(2);
+  
+  //assert(false);  
+  
+  // EigenSolve_UGLY();
+  
+  // output_results_eigensystem();
   
   // {
   //   dealii::Vector<heat::real> difference(triangulation.n_active_cells() );
@@ -125,6 +226,7 @@ void EllipticProblem<dim>::run()
   //   this->L2errorU = difference.l2_norm();
   //   //std::cout << "UState = " << Ustate << std::endl;
   // }
+
   // {
   //   dealii::Vector<heat::real> differenceQ(triangulation.n_active_cells() );
   //   const heat::NeumannBoundaryValues<dim> neuBC;
@@ -208,7 +310,8 @@ EllipticProblem<dim>::make_grid()
 
 
   if(2==dim){
-    bottom_left = dealii::Point<dim>(100* (-1.0/2.0)*pi,2* (-1.0/2.0)*pi);
+    bottom_left = dealii::Point<dim>( (-1.0/2.0)*pi,-1.0*pi);
+    //bottom_left = dealii::Point<dim>( -pi, -pi);
     top_right = dealii::Point<dim>( pi, pi);
   } else if(3 == dim){
     bottom_left
@@ -228,13 +331,12 @@ EllipticProblem<dim>::make_grid()
   const dealii::types::boundary_id dir_minus = 0;
   const dealii::types::boundary_id neu_plus  = 3;
   const dealii::types::boundary_id neu_minus = 2;
-
+  
   {
     const bool colorize = true;
     dealii::GridGenerator::subdivided_hyper_rectangle
       (triangulation, repetitions,bottom_left,top_right, colorize);
-  }  
-  
+  }
   
   //dealii::GridGenerator::hyper_L(triangulation,-1,1);
 
@@ -303,7 +405,7 @@ EllipticProblem<dim>::make_grid()
   }
 
   //Border Refinement
-  unsigned int nBorderRefinements = 2;
+  unsigned int nBorderRefinements = 0;
   for(unsigned int i = 0; i < nBorderRefinements; ++i){
     for(auto cell = triangulation.begin_active();
   	cell != triangulation.end();
@@ -320,9 +422,7 @@ EllipticProblem<dim>::make_grid()
     triangulation.execute_coarsening_and_refinement();
   }
 
-
-  dealii::GridTools::distort_random(0.25,triangulation,true);
-
+  //dealii::GridTools::distort_random(0.25,triangulation,true);
   {
     std::ofstream out ("grid-1.dat");
     dealii::GridOut grid_out;
@@ -332,6 +432,11 @@ EllipticProblem<dim>::make_grid()
     //std::cout << "Grid written to grid-1.eps" << std::endl;
   }
 
+  {
+    std::ofstream out ("grid-1.eps");
+    dealii::GridOut grid_out;
+    grid_out.write_eps(triangulation,out);
+  }
   
   // Dirichelet Boundaries
   boundary_ids_Dir_plus.insert(dir_plus);
@@ -372,7 +477,7 @@ EllipticProblem<dim>::make_grid()
 
 template<int dim>
 void
-EllipticProblem<dim>::make_dofs()
+EllipticProblem<dim>::make_dofs_first_time()
 {
   //This is pretty tricky
   // https://groups.google.com/forum/#!searchin/dealii/2-d$203-d/dealii/0cwQcfG
@@ -384,16 +489,28 @@ EllipticProblem<dim>::make_dofs()
   dof_handler.distribute_dofs(feSystem);
   dof_handler.initialize_local_block_info();
   dof_handlerU.distribute_dofs(feU);
+  dof_handlerU.initialize_local_block_info();
   dof_handlerQ.distribute_dofs(feQ);
+  dof_handlerQ.initialize_local_block_info();
+  
+  // DirSurfaceToVolumeTriangulationMap.clear();
+  // NeuSurfaceToVolumeTriangulationMap.clear();
+  // RobSurfaceToVolumeTriangulationMap.clear();
 
+  // triangulation_Dir.clear();
+  // triangulation_Neu.clear();
+  // triangulation_Rob.clear();  
+      
   if( !boundary_ids_Dir_minus.empty() ){
+    
+  
     DirSurfaceToVolumeTriangulationMap =
       dealii::
       GridGenerator::
       extract_boundary_mesh(dof_handlerU,
 			    dof_handlerTraceU_Dir,
 			    boundary_ids_Dir_minus);
-
+  
     for(auto it = DirSurfaceToVolumeTriangulationMap.begin();
 	it != DirSurfaceToVolumeTriangulationMap.end();
 	++it){
@@ -403,8 +520,9 @@ EllipticProblem<dim>::make_dofs()
     dof_handlerTraceU_Dir.distribute_dofs(feTraceU_Dir);
   }
 
-
+  
   if ( !boundary_ids_Neu_plus.empty() ){
+    
     this->NeuSurfaceToVolumeTriangulationMap =
       dealii::GridGenerator::extract_boundary_mesh(dof_handlerU,
 						   dof_handlerTraceU_Neu,
@@ -418,7 +536,7 @@ EllipticProblem<dim>::make_dofs()
     }
     dof_handlerTraceU_Neu.distribute_dofs(feTraceU_Neu);
   }
-
+  
   //TODO:  Robin stuff has never been tested.
   if( !boundary_ids_Rob_plus.empty() ){
     RobSurfaceToVolumeTriangulationMap =
@@ -435,11 +553,6 @@ EllipticProblem<dim>::make_dofs()
     dof_handlerTraceU_Rob.distribute_dofs(feTraceU_Rob);
   }
 
-
-
-
-
-
   dealii::DoFRenumbering::block_wise(dof_handler);
   std::vector<dealii::types::global_dof_index> dofs_per_block(2);
   dealii::DoFTools::count_dofs_per_block(dof_handler,dofs_per_block);
@@ -452,13 +565,13 @@ EllipticProblem<dim>::make_dofs()
   const unsigned int
     n_u = dofs_per_block[0],
     n_q = dofs_per_block[1];
-
-
+    
   const unsigned int
     n_U = dof_handlerU.n_dofs(),
     n_Q = dof_handlerQ.n_dofs(),
     n_TraceU_Dir = dof_handlerTraceU_Dir.n_dofs(),
     n_TraceU_Neu = dof_handlerTraceU_Neu.n_dofs();
+
   //n_TraceU_Rob = dof_handlerTraceU_Rob.n_dofs();
 
   //TODO: Make this a dealii style assert.
@@ -512,9 +625,8 @@ EllipticProblem<dim>::make_dofs()
   dealii::BlockIndices bi(dofs_per_block);
   dealii::BlockDynamicSparsityPattern csp(bi,bi);
 
-
   sparsity_pattern.reinit(2,2);
-
+  
   const unsigned int
     n_u_dpc = feU.n_dofs_per_cell(),
     n_q_dpc = feQ.n_dofs_per_cell();
@@ -551,9 +663,6 @@ EllipticProblem<dim>::make_dofs()
   // 	    <<  sparsity_pattern.memory_consumption() << std::endl;
 
   system_matrix.reinit(sparsity_pattern);
-  system_matrix2.reinit(sparsity_pattern);
-  system_matrix3.reinit(sparsity_pattern);
-  system_matrix4.reinit(sparsity_pattern);
   
   state.reinit(2);  
   state.block(0).reinit(n_u);
@@ -570,7 +679,7 @@ EllipticProblem<dim>::make_dofs()
   BlockConstraints.block(1).reinit(n_q);
   BlockConstraints.collect_sizes();
   
-
+  std::cout << __LINE__ << std::endl;
   
 
   Ustate = state.block(0);
@@ -596,6 +705,257 @@ EllipticProblem<dim>::make_dofs()
   constraintDirU.reinit(n_TraceU_Dir);
   constraintNeuQ.reinit(n_TraceU_Neu);
 
+
+  SystemMatricesCollection.clear(false);
+
+  SystemMatricesCollection.add(0,0,"MassU");  //0 
+  SystemMatricesCollection.add(0,0,"InverseMassU"); //1
+  SystemMatricesCollection.add(1,1,"MassQ"); //2
+  SystemMatricesCollection.add(1,1,"InverseMassQ");    //3
+  SystemMatricesCollection.add(1,0,"StiffQFromU");//4 
+  SystemMatricesCollection.add(0,1,"StiffUFromQ");//5
+  SystemMatricesCollection.add(1,0,"NumericalFluxQFromU");//6
+  SystemMatricesCollection.add(0,1,"NumericalFluxUFromQ");//7
+  SystemMatricesCollection.add(0,1,"NumericalFluxUFromQBoundary");//8
+  SystemMatricesCollection.add(0,0,"BoundaryMassU");//9
+  SystemMatricesCollection.add(1,1,"BoundaryMassQ");//10
+  SystemMatricesCollection.add(1,0,"NumericalFluxQFromUBoundary");//11
+  SystemMatricesCollection.add(0,0,"Svd_U_for_Dir"); //12
+  SystemMatricesCollection.add(0,0,"Svd_Sigma_for_Dir"); //13
+  SystemMatricesCollection.add(1,1,"Svd_U_for_Neu"); //14
+  SystemMatricesCollection.add(1,1,"Svd_Sigma_for_Neu"); //15
+
+  SystemMatricesCollection.reinit(sparsity_pattern);
+
+  SystemRHSsAndConstraints.add(&BlockMinusRHS, "BlockMinusRHS");
+  SystemRHSsAndConstraints.add(&BlockConstraints, "BlockConstraints");  
+
+  std::cout << "massQ.m() = " <<  SystemMatricesCollection.matrix(2).m() << std::endl;
+}
+
+
+template<int dim>
+void
+EllipticProblem<dim>::make_dofs_every_time()
+{
+  //This is pretty tricky
+  // https://groups.google.com/forum/#!searchin/dealii/2-d$203-d/dealii/0cwQcfG
+  //         2zQ/Pc2G3zIoH-YJ
+
+  // There is a good reason why we use the dof_handlerU for the trace spaces
+  // of Q.  It has to do with the fact that we will be dotting with the unit
+  // normal vector.
+  dof_handler.distribute_dofs(feSystem);
+  dof_handler.initialize_local_block_info();
+  dof_handlerU.distribute_dofs(feU);
+  dof_handlerU.initialize_local_block_info();
+  dof_handlerQ.distribute_dofs(feQ);
+  dof_handlerQ.initialize_local_block_info();
+  dealii::DoFRenumbering::block_wise(dof_handler);
+  // DirSurfaceToVolumeTriangulationMap.clear();
+  // NeuSurfaceToVolumeTriangulationMap.clear();
+  // RobSurfaceToVolumeTriangulationMap.clear();
+
+  // triangulation_Dir.clear();
+  // triangulation_Neu.clear();
+  // triangulation_Rob.clear();  
+      
+  
+  
+  std::vector<dealii::types::global_dof_index> dofs_per_block(2);
+  dealii::DoFTools::count_dofs_per_block(dof_handler,dofs_per_block);
+
+  // dealii::DoFTools::make_sparsity_pattern(dof_handlerElec,
+  // 					  c_sparsityElec,
+  // 					  constraintElec,
+  // 					  /* keep_constrained_dofs = */ false);
+
+  const unsigned int
+    n_u = dofs_per_block[0],
+    n_q = dofs_per_block[1];
+    
+  const unsigned int
+    n_U = dof_handlerU.n_dofs(),
+    n_Q = dof_handlerQ.n_dofs(),
+    n_TraceU_Dir = dof_handlerTraceU_Dir.n_dofs(),
+    n_TraceU_Neu = dof_handlerTraceU_Neu.n_dofs();
+
+  //n_TraceU_Rob = dof_handlerTraceU_Rob.n_dofs();
+
+  //TODO: Make this a dealii style assert.
+  assert(n_U == n_u);
+  assert(n_Q == n_q);
+
+
+  dealii::
+    Table<2,dealii::DoFTools::Coupling>
+    interiorMask(feSystem.n_components(),feSystem.n_components());
+
+  dealii::
+    Table<2,dealii::DoFTools::Coupling>
+    fluxMask(feSystem.n_components(), feSystem.n_components());
+
+  for(unsigned int c = 0; c< feSystem.n_components(); ++c){
+    for(unsigned int d = 0; d < feSystem.n_components(); ++d){
+      interiorMask[c][d]= dealii::DoFTools::none;
+      fluxMask[c][d]= dealii::DoFTools::none;
+    }
+  }
+
+  // U and U itself
+  interiorMask[0][0] = dealii::DoFTools::always;
+
+  // U and Q
+  for(unsigned int j = 1; j < 1 + dim; ++j){
+    interiorMask[0][j] = dealii::DoFTools::always;
+    fluxMask[0][j] = dealii::DoFTools::nonzero;
+  }
+
+  //Q and U;
+  for(unsigned int i = 1; i < 1 + dim; ++i){
+    interiorMask[i][0] = dealii::DoFTools::always;
+    fluxMask[i][0] = dealii::DoFTools::nonzero;
+  }
+
+  //Q and Q;
+  for(unsigned int i = 1; i < 1 + dim; ++i){
+    for(unsigned int j = 1; j < 1 + dim; ++j){
+      if((i == j) || true){
+	interiorMask[i][j] = dealii::DoFTools::always;
+	fluxMask[i][j] = dealii::DoFTools::always;
+      }
+    }
+  }
+
+
+
+  //dealii::DoFTools::count_dofs_per_block(dof_handler,
+  dealii::BlockIndices bi(dofs_per_block);
+  dealii::BlockDynamicSparsityPattern csp(bi,bi);
+
+  //sparsity_pattern.reinit(2,2);
+  
+  const unsigned int
+    n_u_dpc = feU.n_dofs_per_cell(),
+    n_q_dpc = feQ.n_dofs_per_cell();
+
+  sparsity_pattern.block(0,0).reinit(n_u,n_u,n_u_dpc);
+  sparsity_pattern.block(0,1).reinit(n_u,n_q, 2 * (2 * dim + 1) * n_q_dpc);
+
+
+  sparsity_pattern.block(1,0).reinit(n_q,n_u,2 * (2 * dim + 1) * n_u_dpc);
+  sparsity_pattern.block(1,1).reinit(n_q,n_q, 4 * dim * n_q_dpc);
+
+  
+  
+
+  // std::cout << "sparsity_pattern.memory_consumption() = "
+  // 	    <<  sparsity_pattern.memory_consumption() << std::endl;
+
+  sparsity_pattern.collect_sizes();
+  std::cout << __LINE__ <<std::endl;
+  dealii::
+    DoFTools::
+    make_flux_sparsity_pattern(dof_handler,
+			       sparsity_pattern,
+			       interiorMask,
+			       fluxMask);
+
+  std::cout << __LINE__ <<std::endl;
+  // std::cout << "After make flux sparsity pattern" << std::endl;
+  // std::cout << "sparsity_pattern.memory_consumption() = "
+  // 	    <<  sparsity_pattern.memory_consumption() << std::endl;
+std::cout << __LINE__ <<std::endl;
+  sparsity_pattern.compress();
+  // std::cout << "After compress" << std::endl;
+  // std::cout << "sparsity_pattern.memory_consumption() = "
+  // 	    <<  sparsity_pattern.memory_consumption() << std::endl;
+std::cout << __LINE__ <<std::endl;
+  system_matrix.reinit(sparsity_pattern);
+  std::cout << __LINE__ <<std::endl;
+  state.reinit(2);  
+  state.block(0).reinit(n_u);
+  state.block(1).reinit(n_q);
+  state.collect_sizes();
+
+  BlockMinusRHS.reinit(2);
+  BlockMinusRHS.block(0).reinit(n_u);
+  BlockMinusRHS.block(1).reinit(n_q);
+  BlockMinusRHS.collect_sizes();
+std::cout << __LINE__ <<std::endl;
+  BlockConstraints.reinit(2);
+  BlockConstraints.block(0).reinit(n_u);
+  BlockConstraints.block(1).reinit(n_q);
+  BlockConstraints.collect_sizes();
+  std::cout << __LINE__ <<std::endl;
+    
+  for(unsigned int i = 0; i < n_eigenvalues; ++i){
+    (UeigenStates[i]).reinit(n_u);
+    (QeigenStates[i]).reinit(n_q);
+  }
+  std::cout << __LINE__ <<std::endl;
+  
+  //U_RHS = state.block(0);
+  Ustate = state.block(0);
+  Qstate = state.block(1);
+  U_MinusRHS = state.block(0);
+  U_RHS_From_U = state.block(0);
+  UdirConstraint_RHS = state.block(0);
+  QneuConstraint_RHS = state.block(1);
+  //Q_RHS = state.block(1);
+  Q_MinusRHS = state.block(1);
+  
+  lambda_UGLY = state.block(0);
+  mu_UGLY = state.block(1);
+  
+  //SystemMatricesCollection.clear();
+  
+  // decltype(SystemMatricesCollection) temp;
+  
+  // SystemMatricesCollection = temp;
+  // auto temp = SystemMatricesCollection.matrix(0);
+  // std::cout << __LINE__ <<std::endl;
+  // std::cout << "temp.m() = "
+  // 	    <<  temp.m() << std::endl;
+
+  // std::cout << __LINE__ <<std::endl;
+  
+  SystemMatricesCollection.clear(false);
+  
+  // SystemMatricesCollection.add(0,0,"MassU");  //0 
+  // SystemMatricesCollection.add(0,0,"InverseMassU"); //1
+  // SystemMatricesCollection.add(1,1,"MassQ"); //2
+  // SystemMatricesCollection.add(1,1,"InverseMassQ");    //3
+  // SystemMatricesCollection.add(1,0,"StiffQFromU");//4 
+  // SystemMatricesCollection.add(0,1,"StiffUFromQ");//5
+  // SystemMatricesCollection.add(1,0,"NumericalFluxQFromU");//6
+  // SystemMatricesCollection.add(0,1,"NumericalFluxUFromQ");//7
+  // SystemMatricesCollection.add(0,1,"NumericalFluxUFromQBoundary");//8
+  // SystemMatricesCollection.add(0,0,"BoundaryMassU");//9
+  // SystemMatricesCollection.add(1,1,"BoundaryMassQ");//10
+  // SystemMatricesCollection.add(1,0,"NumericalFluxQFromUBoundary");//11
+  // SystemMatricesCollection.add(0,0,"Svd_U_for_Dir"); //12
+  // SystemMatricesCollection.add(0,0,"Svd_Sigma_for_Dir"); //13
+  // SystemMatricesCollection.add(1,1,"Svd_U_for_Neu"); //14
+  // SystemMatricesCollection.add(1,1,"Svd_Sigma_for_Neu"); //15
+
+  SystemMatricesCollection.reinit(sparsity_pattern);
+  //SystemRHSsAndConstraints.clear();
+  // SystemRHSsAndConstraints.add(&BlockMinusRHS, "BlockMinusRHS");
+  // SystemRHSsAndConstraints.add(&BlockConstraints, "BlockConstraints");
+  
+  // PRINT(SystemRHSsAndConstraints.entry< dealii::BlockVector<heat::real> * >(0)->block(0).size() );
+  // PRINT(SystemRHSsAndConstraints.entry< dealii::BlockVector<heat::real> * >(0)->block(1).size() );
+  // PRINT(SystemRHSsAndConstraints.entry< dealii::BlockVector<heat::real> * >(1)->block(0).size() );
+  // PRINT(SystemRHSsAndConstraints.entry< dealii::BlockVector<heat::real> * >(1)->block(1).size() );
+
+  //PRINT(SystemMatricesCollection.entry(1).size());
+  
+  
+  // std::cout << "SystemMatricesCollection.matrix(0).m() = "
+  // 	    <<  SystemMatricesCollection.matrix(0).m() << std::cout;
+  
+  
 }
 
 
@@ -886,14 +1246,14 @@ EllipticProblem<dim>::make_dofs()
   {
   heat::InitialValuesU<dim> initU;
   dealii::QGauss<dim> quadrature_formula(degree + 2);
-  dealii
-  ::VectorTools
-  ::create_right_hand_side(mapping,
+dealii
+::VectorTools
+::create_right_hand_side(mapping,
   dof_handlerU,
   quadrature_formula,
   initU,
   U_RHS);
-  }
+}
 
 */
 
@@ -1005,267 +1365,238 @@ void EllipticProblem<dim>::report_dofs()
   }
 */
 
+template<int dim>
+void
+EllipticProblem<dim>::assemble_system_PreProcess()
+{
+  heat::real tolerance = 1e-10;
+  dealii::QGauss<dim> body_quadrature_formula(degree+4);
+  dealii::QGauss<dim-1> face_quadrature_formula(degree+4);
+
+  system_matrix.reinit(sparsity_pattern);
+
+  MassU.reinit(sparsity_pattern.block(0,0) );
+  Svd_U_for_Dir.reinit(sparsity_pattern.block(0,0) );
+  Svd_Sigma_for_Dir.reinit(sparsity_pattern.block(0,0) );
+  InverseMassU.reinit(sparsity_pattern.block(0,0));
+  BoundaryMassU.reinit(sparsity_pattern.block(0,0) );
+  StiffUFromQ.reinit(sparsity_pattern.block(0,1));
+  FluxBoundaryUFromQ.reinit(sparsity_pattern.block(0,1));
+  FluxCenterUFromQ.reinit(sparsity_pattern.block(0,1));
+  FluxPosUFromQ.reinit(sparsity_pattern.block(0,1));
+  FluxNegUFromQ.reinit(sparsity_pattern.block(0,1));
+  TotalUFromQ.reinit(sparsity_pattern.block(0,1));
+  NumericalFluxUFromQ.reinit(sparsity_pattern.block(0,1));
+  NumericalFluxUFromQBoundary.reinit(sparsity_pattern.block(0,1));
+  
+  MassQ.reinit(sparsity_pattern.block(1,1) );
+  Svd_U_for_Neu.reinit(sparsity_pattern.block(1,1) );
+  Svd_Sigma_for_Neu.reinit(sparsity_pattern.block(1,1) );
+  BoundaryMassQ.reinit(sparsity_pattern.block(1,1));
+  InverseMassQ.reinit(sparsity_pattern.block(1,1));
+  InverseMassQCholesky.reinit(sparsity_pattern.block(1,1));
+  StiffQFromU.reinit(sparsity_pattern.block(1,0));
+  FluxBoundaryQFromU.reinit(sparsity_pattern.block(1,0));
+  FluxCenterQFromU.reinit(sparsity_pattern.block(1,0));
+  FluxPosQFromU.reinit(sparsity_pattern.block(1,0));
+  FluxNegQFromU.reinit(sparsity_pattern.block(1,0));
+  TotalQFromU.reinit(sparsity_pattern.block(1,0));
+  NumericalFluxQFromU.reinit(sparsity_pattern.block(1,0));
+  NumericalFluxQFromUBoundary.reinit(sparsity_pattern.block(1,0));  
+
+}
+
 template <int dim>
 void
-EllipticProblem<dim>::assemble_system_UGLY()
-  
+EllipticProblem<dim>::assemble_system_UGLY()  
 {
 
   heat::real tolerance = 1e-10;
-  const unsigned int n_dofs_U = dof_handlerU.n_dofs();
-  const unsigned int n_dofs_Q = dof_handlerQ.n_dofs();
+  
+  dealii::MeshWorker::IntegrationInfoBox<dim> info_boxSys;
+    
+  const unsigned int n_gauss_points = dof_handler.get_fe().degree+1;
+    
+  info_boxSys.initialize_gauss_quadrature(n_gauss_points,
+					  n_gauss_points,
+					  n_gauss_points);
+
+  dealii::UpdateFlags update_flags
+    = dealii::update_values
+    | dealii::update_gradients
+    | dealii::update_quadrature_points;    
+    
+  info_boxSys.initialize_update_flags(true);
+
+  info_boxSys.add_update_flags_all(update_flags);
+  info_boxSys.add_update_flags_face(dealii::update_normal_vectors);
+  info_boxSys.add_update_flags_boundary(dealii::update_normal_vectors);
+
+  dealii::MeshWorker::DoFInfo<dim> dof_infoSys(dof_handler.block_info() );
+      
+  info_boxSys.initialize(feSystem, mapping, &dof_handler.block_info() );
+    
+  dealii
+    ::MeshWorker
+    ::Assembler
+    ::SystemLocalBlocksToGlobalBlocks<dealii::SparseMatrix<heat::real>,
+				      dealii::BlockVector<heat::real>,
+				      heat::real>
+    assembleSystem;
+    
+  assembleSystem.initialize(&(dof_handler.block_info()),
+			    SystemMatricesCollection,
+			    SystemRHSsAndConstraints);
+    
+  heat::LDGIntegratorKENT::LDGIntegratorKENT<dim> LDGintegrator(referenceDirection,
+								info_boxSys.face_quadrature,
+								info_boxSys.face_flags,
+								mapping);
+    
+  dealii::MeshWorker::LoopControl loopControl;
+  //loopControl.cells_first = false;
+  //loopControl.own_faces = dealii::MeshWorker::LoopControl::both;
+        
+  dealii::MeshWorker::integration_loop<dim,dim>
+    (dof_handler.begin_active(),
+     dof_handler.end(),
+     dof_infoSys,
+     info_boxSys,
+     LDGintegrator,
+     assembleSystem,
+     loopControl);
+}
 
 
-  // Everything
+template <int dim>
+void
+EllipticProblem<dim>::assemble_system_PostProcess()
+{
 
+  heat::real tolerance = 1e-10;
   {
-    dealii::MeshWorker::IntegrationInfoBox<dim> info_boxSys;
-    const unsigned int n_gauss_points = dof_handler.get_fe().degree+1;
-    info_boxSys.initialize_gauss_quadrature(n_gauss_points,
-					    n_gauss_points,
-					    n_gauss_points);
-
-    dealii::UpdateFlags update_flags
-      = dealii::update_values
-      | dealii::update_gradients
-      | dealii::update_quadrature_points;
-    
-    dealii::UpdateFlags face_update_flags
-      = dealii::update_values
-      | dealii::update_gradients
-      | dealii::update_quadrature_points
-      | dealii::update_normal_vectors;
-    
-    info_boxSys.initialize_update_flags(true);
-
-    info_boxSys.add_update_flags_all(update_flags);
-    info_boxSys.add_update_flags_face(dealii::update_normal_vectors);
-    info_boxSys.add_update_flags_boundary(dealii::update_normal_vectors);
-    
-
-    dealii::MeshWorker::DoFInfo<dim> dof_infoSys(dof_handler.block_info() );
-      
-    //dof_handler.block_info().initialize_local(dof_handler);
-      
-    info_boxSys.initialize(feSystem, mapping,&dof_handler.block_info() );
-    
-    // std::vector
-    //   <
-    //   dealii::SmartPointer
-    //   <
-    // 	dealii::BlockSparseMatrix
-    // 	<
-    // 	  double
-    // 	>,
-    // 	dealii::MeshWorker::Assembler::MatrixSimple
-    // 	<
-    // 	  dealii::BlockSparseMatrix
-    // 	  <
-    // 	    double
-    // 	  >
-    //     >
-    //   >
-    //   >VectorOfMatrices = {&system_matrix, &system_matrix2, &system_matrix3, &system_matrix4};
-
-    
-    //dealii::MatrixBlockVector<dealii::SparseMatrix<double> > > blocks;
-
-    
-    
-    dealii
-      ::MeshWorker
-      ::Assembler
-      ::MatrixSimple<dealii::BlockSparseMatrix<heat::real> > assembler;
-
-    //dealii::MatrixBlock<dealii::SparseMatrix<heat::real> > MassUKent;
-
-    //MassUKent.reinit(sparsity_pattern.block(0,0) );    
-    dealii::MatrixBlockVector<dealii::SparseMatrix<heat::real> > blockKENT;    
-
-    dealii
-      ::MeshWorker
-      ::Assembler
-      ::SystemLocalBlocksToGlobalBlocks<dealii::SparseMatrix<heat::real>, dealii::BlockVector<heat::real>, heat::real>
-      assembleSystemKENT;
-    
-
-    dealii::AnyData anydata;
-
-    // std::cout << "U_minusRHS.size() = " << U_MinusRHS.size() << std::endl;
-    // std::cout << "Q_minusRHS.size() = " << Q_MinusRHS.size() << std::endl;
-
-    anydata.add(&BlockMinusRHS, "BlockMinusRHS");
-    anydata.add(&BlockConstraints, "BlockConstraints");
-
-    //anydata.add(&Q_MinusRHS, "Q_MinusRHS");    
-    //anydata.add(&U_MinusRHS, "U_MinusRHS");
-
-    //anydata.add(&UdirConstraint_RHS, "UdirConstraint_RHS");
-    //anydata.add(&QneuConstraint_RHS, "QneuConstraint_RHS");
-
-    dealii
-      ::MeshWorker
-      ::Assembler
-      ::ResidualLocalBlocksToGlobalBlocks< dealii::Vector<heat::real> > assemblerRHSKENT;
-
-    assemblerRHSKENT.initialize(&(dof_handler.block_info() ), anydata);
-
-    blockKENT.add(0,0,"MassU");  //0 
-    blockKENT.add(0,0,"InverseMassU"); //1
-    blockKENT.add(1,1,"MassQ"); //2
-    blockKENT.add(1,1,"InverseMassQ");    //3
-    blockKENT.add(1,0,"StiffQFromU");//4 
-    blockKENT.add(0,1,"StiffUFromQ");//5
-    blockKENT.add(1,0,"NumericalFluxQFromU");//6
-    blockKENT.add(0,1,"NumericalFluxUFromQ");//7
-    blockKENT.add(0,1,"NumericalFluxUFromQBoundary");//8
-    blockKENT.add(0,0,"BoundaryMassU");//9
-    blockKENT.add(1,1,"BoundaryMassQ");//10
-    blockKENT.add(1,0,"NumericalFluxQFromUBoundary");//11
-    blockKENT.add(0,0,"Svd_U_for_Dir"); //12
-    blockKENT.add(0,0,"Svd_Sigma_for_Dir"); //13
-    blockKENT.add(1,1,"Svd_U_for_Neu"); //14
-    blockKENT.add(1,1,"Svd_Sigma_for_Neu"); //15    
-    
-    
-    blockKENT.reinit(sparsity_pattern);
-    //MassUKent.reinit(sparsity_pattern);
-    
-    //blockKENT.matrix(0) = MassUKent;    
-    
-    assembleSystemKENT.initialize(&(dof_handler.block_info()),blockKENT,anydata);
-    
-
-    
-
-    heat::LDGIntegratorKENT::LDGIntegratorKENT<dim> my_integratorKENT(referenceDirection,
-    								      info_boxSys.face_quadrature,
-    								      face_update_flags);
-    //info_boxSys.face_flags);
-    
-    
-     
-    dealii::MeshWorker::LoopControl lControlKENT;
-    lControlKENT.cells_first = false;
-    dealii::MeshWorker::integration_loop<dim,dim>
-      (dof_handler.begin_active(),
-       dof_handler.end(),
-       dof_infoSys,
-       info_boxSys,
-       my_integratorKENT,
-       assembleSystemKENT,
-       lControlKENT
-    );
-
-    {
-      rankBoundaryMassU = 0;
-      nullityBoundaryMassU = 0;
-      std::vector<unsigned int> Prows, Qrows;
-      for(unsigned int i = 0; i < blockKENT.matrix(13).m(); ++i){
-	if( fabs( blockKENT.matrix(13)(i,i) ) > tolerance ){
-	  ++rankBoundaryMassQ;
-	  Prows.emplace_back(i);
-	}
-	else{
-	  ++nullityBoundaryMassU;
-	  Qrows.emplace_back(i);
-	}
+    const unsigned int n_dofs_U = dof_handlerU.n_dofs();    
+  
+    rankBoundaryMassU = 0;
+    nullityBoundaryMassU = 0;
+    std::vector<unsigned int> Prows, Qrows;
+    for(unsigned int i = 0; i < SystemMatricesCollection.matrix(13).m(); ++i){
+	
+      if( fabs( SystemMatricesCollection.matrix(13)(i,i) ) > tolerance ){
+	++rankBoundaryMassU;
+	Prows.emplace_back(i);
       }
-      PP.reinit(rankBoundaryMassU, n_dofs_U);
-      QQ.reinit(nullityBoundaryMassU, n_dofs_U);
-      PP = 0;
-      QQ = 0;
-
-      for(unsigned int i = 0; i < rankBoundaryMassU; ++i){
-	PP.add(i,Prows[i], 1.0);
-      }
-
-      for(unsigned int i = 0; i < nullityBoundaryMassU; ++i){
-	QQ.add(i,Qrows[i], 1.0);
+      else{
+	++nullityBoundaryMassU;
+	Qrows.emplace_back(i);
       }
     }
 
-    {
-      rankBoundaryMassQ = 0;
-      nullityBoundaryMassQ = 0;
+    PP.reinit(rankBoundaryMassU, n_dofs_U);
+    QQ.reinit(nullityBoundaryMassU, n_dofs_U);
 
-      std::vector<unsigned int> Rrows, Srows;
+    PP = 0;
+    QQ = 0;
 
-      for(unsigned int i = 0; i < blockKENT.matrix(15).m(); ++i){
-	if(fabs( blockKENT.matrix(15)(i,i) ) > tolerance ){
-	  ++rankBoundaryMassU;
-	  Rrows.emplace_back(i);	  
-	}
-	else {
-	  ++nullityBoundaryMassU;
-	  Srows.emplace_back(i);
-	}	
-      }
 
-      RR = 0;
-      SS = 0;
+    for(unsigned int i = 0; i < rankBoundaryMassU; ++i){
+      PP.add(i,Prows[i], 1.0);
+    }
 
-      RR.reinit(rankBoundaryMassQ, n_dofs_Q);
-      SS.reinit(nullityBoundaryMassQ, n_dofs_Q);
-    
-      for(unsigned int i = 0; i < rankBoundaryMassQ; ++i){
-	RR.add(i,Rrows[i],1.0);    
-      }
-
-      for(unsigned int i = 0; i < nullityBoundaryMassQ; ++i){
-	SS.add(i, Srows[i],1.0);
-      }
-
-      
+    for(unsigned int i = 0; i < nullityBoundaryMassU; ++i){
+      QQ.add(i,Qrows[i], 1.0);
     }
   }
 
-  // //Jump Q
-  // {
-  //   dealii::MeshWorker::IntegrationInfoBox<dim> info_boxSys;
-
-  //   dealii::UpdateFlags update_flags
-  //     = dealii::update_values | dealii::update_gradients | dealii::update_quadrature_points;
-
-  //   info_boxSys.add_update_flags_all(update_flags);
-
-  //   dealii::MeshWorker::DoFInfo<dim> dof_infoSys(dof_handler.block_info() );     
+  {
+    const unsigned int n_dofs_Q = dof_handlerQ.n_dofs();
       
-  //   //dof_handler.block_info().initialize_local(dof_handler);
+    rankBoundaryMassQ = 0;
+    nullityBoundaryMassQ = 0;
       
-  //   info_boxSys.initialize(feSystem, mapping,&dof_handler.block_info() );
+    std::vector<unsigned int> Rrows, Srows;
 
-  //   dealii
-  //   ::MeshWorker
-  //   ::Assembler
-  //   ::MatrixSimple<dealii::BlockSparseMatrix<heat::real> > assembler;
+    for(unsigned int i = 0; i < SystemMatricesCollection.matrix(15).m(); ++i){
+      if(fabs( SystemMatricesCollection.matrix(15)(i,i) ) > tolerance ){
+	++rankBoundaryMassQ;
+	Rrows.emplace_back(i);	  
+      }
+      else {
+	++nullityBoundaryMassQ;
+	Srows.emplace_back(i);
+      }	
+    }
 
-  //   //dof_infoSys.initialize_local_blocks(dof_handler.block_info().local() );
+    RR = 0;
+    SS = 0;
+
+    RR.reinit(rankBoundaryMassQ, n_dofs_Q);
+    SS.reinit(nullityBoundaryMassQ, n_dofs_Q);
     
-  //   assembler.initialize(system_matrix);  
-      
-    
-  //   heat::LDGIntegrator::JumpQ<dim> my_integrator;
-  //    dealii::MeshWorker::integration_loop<dim,dim>
-  //      (
-  //   	dof_handler.begin_active(),
-  //   	dof_handler.end(),
-  //   	dof_infoSys,
-  //   	info_boxSys,
-  //   	my_integrator,
-  //   	assembler);     
+    for(unsigned int i = 0; i < rankBoundaryMassQ; ++i){
+      RR.add(i,Rrows[i],1.0);    
+    }
 
-  // }  
+    for(unsigned int i = 0; i < nullityBoundaryMassQ; ++i){
+      SS.add(i, Srows[i],1.0);
+    }      
+  }
+
+  
+  
+  //We copy over all the matrices from the SystemMatricesCollection to the individually name matrices.
+  //This is, of course, a waste of processing, but is a temporary fix.
+
+  //TODO:  Use pointers instead of copying.  
+  MassU                      .copy_from( SystemMatricesCollection.matrix( 0 ) );  
+  InverseMassU               .copy_from( SystemMatricesCollection.matrix( 1 ) );
+  MassQ                      .copy_from( SystemMatricesCollection.matrix( 2 ) );
+  InverseMassQ               .copy_from( SystemMatricesCollection.matrix( 3 ) );
+  StiffQFromU                .copy_from( SystemMatricesCollection.matrix( 4 ) );
+  StiffUFromQ                .copy_from( SystemMatricesCollection.matrix( 5 ) );
+
+  TotalQFromU                .copy_from( StiffQFromU);
+  TotalQFromU                .add( 1.0, SystemMatricesCollection.matrix( 6 ) );
+  TotalQFromU                .add( 1.0, SystemMatricesCollection.matrix( 11) );
+
+  TotalUFromQ                .copy_from( StiffUFromQ);
+  TotalUFromQ                .add(1.0, SystemMatricesCollection.matrix( 7 ) );
+  TotalUFromQ                .add(1.0, SystemMatricesCollection.matrix( 8 ) );
+
+  BoundaryMassU              .copy_from( SystemMatricesCollection.matrix(9 ) );
+  BoundaryMassQ              .copy_from( SystemMatricesCollection.matrix(10) );  
+  
+  Svd_U_for_Dir              .copy_from( SystemMatricesCollection.matrix(12) );
+  Svd_Sigma_for_Dir          .copy_from( SystemMatricesCollection.matrix(13) );
+  Svd_U_for_Neu              .copy_from( SystemMatricesCollection.matrix(14) );
+  Svd_Sigma_for_Neu          .copy_from( SystemMatricesCollection.matrix(15) );
+
+  U_MinusRHS = SystemRHSsAndConstraints.entry<dealii::BlockVector<heat::real> * >(0)->block(0);
+  Q_MinusRHS = SystemRHSsAndConstraints.entry<dealii::BlockVector<heat::real> * >(0)->block(1);
+  UdirConstraint_RHS = SystemRHSsAndConstraints.entry<dealii::BlockVector<heat::real >*>(1)->block(0);
+  QneuConstraint_RHS = SystemRHSsAndConstraints.entry<dealii::BlockVector<heat::real> *>(1)->block(1);
+
+  mu_UGLY.reinit(Q_MinusRHS.size());
+  lambda_UGLY.reinit(U_MinusRHS.size());
+  
+  lambdaHat_UGLY.reinit(rankBoundaryMassU);
+  muHat_UGLY.reinit(rankBoundaryMassQ);    
+  
 }
+  
+    
     
   
 
 
 template <int dim>
 void
-EllipticProblem<dim>::assemble_system()
+EllipticProblem<dim>::assemble_system_OLD()
 {
 
+  
+
+  
   //grvy_timer_begin("assemble_system_inside");
   heat::real tolerance = 1e-10;
   dealii::QGauss<dim> body_quadrature_formula(degree+4);
@@ -1292,50 +1623,8 @@ EllipticProblem<dim>::assemble_system()
 
   const dealii::FEValuesExtractors::Scalar density(0);
   const dealii::FEValuesExtractors::Vector FLUX(1);
-
-  // For now, just build everything separately.  Don't worry about saving
-
-  // dealii::DoFTools::map_dof_to_boundary_indices(dof_handlerQ,
-  // 						boundary_ids_Dir_minus,
-  // 						uDofsWithSupportOnBoundary);
-
-
-  /*std::cout << "uDofsWithSupportOnBoundary.size() = " << uDofsWithSupportOnBoundary.size() << std::endl;
-
-    for(unsigned int i = 0;
-    i < uDofsWithSupportOnBoundary.size();
-    ++i){
-    const dealii::types::global_dof_index j = uDofsWithSupportOnBoundary[i];
-    if(j != dealii::numbers::invalid_dof_index){
-    std::cout
-    << "uDofsWithSupportOnBoundary["<< i << "]= "
-    << uDofsWithSupportOnBoundary[i] << std::endl;
-    }
-    }
-  */
-
-  //  dealii
-  //     ::DoFTools
-  // ::make_boundary_sparsity_pattern
-  // (dof_handlerU,
-  //  uDofsWithSupportOnBoundary,
-  //  TRACE_U_DIR_NEW_SparsityPattern);
-
-  //   typename dealii::FunctionMap<dim>::type dirichlet_boundary_functions;
-  //   dealii::ZeroFunction<dim> homogeneous_dir_bc(1);
-  //   dirichlet_boundary_functions[0] = &homogeneous_dir_bc;
-
-  //   dealii::
-  //     MatrixCreator::
-  //     create_boundary_mass_matrix
-  //     (mapping,
-  //      dof_handlerU,
-  //      face_quadrature_formula,
-  //      TRACE_U_DIR_NEW,
-  //      dirichlet_boundary_functions,
-  //      TRACE_RHS_VECTOR,
-  //      uDofsWithSupportOnBoundary
-  //      );
+  
+  // For now, just build everything separately.  Don't worry about saving memory.
 
   // We are following the step-30 tutorial
   const unsigned int n_dofs_U = dof_handlerU.n_dofs();
@@ -1343,42 +1632,14 @@ EllipticProblem<dim>::assemble_system()
   const unsigned int n_dofs_TrU_Dir = dof_handlerTraceU_Dir.n_dofs();
   const unsigned int n_dofs_TrU_Neu = dof_handlerTraceU_Neu.n_dofs();
 
-  system_matrix.reinit(sparsity_pattern);
-
-  MassU.reinit(sparsity_pattern.block(0,0) );
-  Svd_U_for_Dir.reinit(sparsity_pattern.block(0,0) );
-  Svd_Sigma_for_Dir.reinit(sparsity_pattern.block(0,0) );
-  InverseMassU.reinit(sparsity_pattern.block(0,0));
-  BoundaryMassU.reinit(sparsity_pattern.block(0,0) );
-  StiffUFromQ.reinit(sparsity_pattern.block(0,1));
-  FluxBoundaryUFromQ.reinit(sparsity_pattern.block(0,1));
-  FluxCenterUFromQ.reinit(sparsity_pattern.block(0,1));
-  FluxPosUFromQ.reinit(sparsity_pattern.block(0,1));
-  FluxNegUFromQ.reinit(sparsity_pattern.block(0,1));
-  TotalUFromQ.reinit(sparsity_pattern.block(0,1));
-
-  MassQ.reinit(sparsity_pattern.block(1,1) );
-  Svd_U_for_Neu.reinit(sparsity_pattern.block(1,1) );
-  Svd_Sigma_for_Neu.reinit(sparsity_pattern.block(1,1) );
-  BoundaryMassQ.reinit(sparsity_pattern.block(1,1));
-  InverseMassQ.reinit(sparsity_pattern.block(1,1));
-  InverseMassQCholesky.reinit(sparsity_pattern.block(1,1));
-  StiffQFromU.reinit(sparsity_pattern.block(1,0));
-  FluxBoundaryQFromU.reinit(sparsity_pattern.block(1,0));
-  FluxCenterQFromU.reinit(sparsity_pattern.block(1,0));
-  FluxPosQFromU.reinit(sparsity_pattern.block(1,0));
-  FluxNegQFromU.reinit(sparsity_pattern.block(1,0));
-  TotalQFromU.reinit(sparsity_pattern.block(1,0));
-  TraceUDir.reinit(n_dofs_TrU_Dir,n_dofs_U,degree);
-  TraceQNeu.reinit(n_dofs_TrU_Neu,n_dofs_Q,degree);
-  
-
-
   const unsigned int
     dofs_per_cell_U = dof_handlerU.get_fe().dofs_per_cell,
     dofs_per_cell_Q = dof_handlerQ.get_fe().dofs_per_cell,
     dofs_per_cell_TraceU_Dir = feTraceU_Dir.n_dofs_per_cell(),
     dofs_per_cell_TraceU_Neu = feTraceU_Neu.n_dofs_per_cell();
+
+  TraceUDir.reinit(n_dofs_TrU_Dir,n_dofs_U,degree);
+  TraceQNeu.reinit(n_dofs_TrU_Neu,n_dofs_Q,degree);  
 
   std::vector<dealii::types::global_dof_index>
     dofs_self_U(dofs_per_cell_U),
@@ -1437,27 +1698,27 @@ EllipticProblem<dim>::assemble_system()
   //grvy_timer_end("assemble_system_inside");
   // http://www.dealii.org/developer/doxygen/deal.II/group__Iterators.html
   for(auto
-	cell_sys = dof_handler.begin_active(),
-	cell_U   = dof_handlerU.begin_active(),
-	cell_Q   = dof_handlerQ.begin_active();
+  	cell_sys = dof_handler.begin_active(),
+  	cell_U   = dof_handlerU.begin_active(),
+  	cell_Q   = dof_handlerQ.begin_active();
 
       cell_sys != dof_handler.end();
 
       ++cell_sys,
-	++cell_U,
-	++cell_Q
+  	++cell_U,
+  	++cell_Q
       ){
 
     dealii::FEValues<dim>
       fe_v_body_U(mapping, feU,  body_quadrature_formula,
-		  body_update_flags);
+  		  body_update_flags);
     
     dealii
       ::FEValues<dim>
       fe_v_body_Q(mapping,
-		  feQ,
-		  body_quadrature_formula,
-		  body_update_flags);
+  		  feQ,
+  		  body_quadrature_formula,
+  		  body_update_flags);
 
     fe_v_body_U.reinit(cell_U);
     fe_v_body_Q.reinit(cell_Q);
@@ -1512,9 +1773,9 @@ EllipticProblem<dim>::assemble_system()
     Q_Q_Matrix = 0;
     Q_Q_Matrix.Tadd(1.0, Q_Q_Matrix_Cholesky);
     InsertGlobalFromLocal(cell_Q,
-			  cell_Q,
-			  Q_Q_Matrix_Cholesky,
-			  InverseMassQCholesky); 
+  			  cell_Q,
+  			  Q_Q_Matrix_Cholesky,
+  			  InverseMassQCholesky); 
       
     
     
@@ -1540,422 +1801,421 @@ EllipticProblem<dim>::assemble_system()
     //Now loop over the faces;
     //grvy_timer_begin("loop over faces");
     for(unsigned int face_no = 0;
-	face_no < dealii::GeometryInfo<dim>::faces_per_cell;
-	++face_no){
+  	face_no < dealii::GeometryInfo<dim>::faces_per_cell;
+  	++face_no){
 
       typename 
-	dealii::DoFHandler<dim>::face_iterator
-	face_sys = cell_sys->face(face_no),
-	face_U = cell_U->face(face_no);
+  	dealii::DoFHandler<dim>::face_iterator
+  	face_sys = cell_sys->face(face_no),
+  	face_U = cell_U->face(face_no);
       //face_Q = cell_Q->face(face_no);
 
       if( face_sys->at_boundary() ){
 
-	dealii::FEFaceValues<dim>
-	  fe_v_face_U(mapping, feU, face_quadrature_formula,
-		      face_update_flags);
+  	dealii::FEFaceValues<dim>
+  	  fe_v_face_U(mapping, feU, face_quadrature_formula,
+  		      face_update_flags);
 
-	dealii::FEFaceValues<dim>
-	  fe_v_face_Q(mapping,
-		      feQ,
-		      face_quadrature_formula,
-		      face_update_flags);
+  	dealii::FEFaceValues<dim>
+  	  fe_v_face_Q(mapping,
+  		      feQ,
+  		      face_quadrature_formula,
+  		      face_update_flags);
 
-	fe_v_face_U.reinit(cell_U,face_no);
-	fe_v_face_Q.reinit(cell_Q,face_no);
-
-
-	if( boundary_ids_Dir_plus
-	    .count(face_sys->boundary_id()) != 0){
-	  //Dir plus
-	  // FluxUFromQBoundary
-	  U_Q_Matrix = 0;
-	  assembleFluxUFromQBoundaryLocal(fe_v_face_U,fe_v_face_Q,U_Q_Matrix);
-	  InsertGlobalFromLocal(cell_U,
-				cell_Q,
-				U_Q_Matrix,
-				FluxBoundaryUFromQ);
-
-	  Q_Vector = 0;
-	  assembleQ_RHS_FromDirPlusLocal(fe_v_face_Q,Q_Vector);
-	  InsertGlobalFromLocalVector(cell_Q,Q_Vector,Q_MinusRHS);
-	  //Q_Vector *= -1.0;
-	  //InsertGlobalFromLocalVector(cell_Q,Q_Vector,Q_RHS);
-	}
-
-	else if(boundary_ids_Dir_minus.
-		count(face_sys->boundary_id()) != 0){
-
-	  // FluxQFromUBoundary
-	  Q_U_Matrix = 0;
-	  assembleFluxQFromUBoundaryLocal(fe_v_face_Q,fe_v_face_U,Q_U_Matrix);
-	  InsertGlobalFromLocal(cell_Q,cell_U,Q_U_Matrix,FluxBoundaryQFromU);
-
-	  // Boundary massMatrix;
-	  U_U_Matrix_Boundary_temp = 0;
-	  assembleBoundaryMassULocal(fe_v_face_U, U_U_Matrix_Boundary_temp);
-	  InsertGlobalFromLocal(cell_U,
-				cell_U,
-				U_U_Matrix_Boundary_temp,
-				BoundaryMassU);
-
-	  U_U_Matrix_Boundary.add(1.0, U_U_Matrix_Boundary_temp);
-
-	  // Dirichelet Boundary vector;
-	  U_Vector = 0;
-	  assembleConstraintUDirMinusLocalNOTRACE(fe_v_face_U,U_Vector);
-	  InsertGlobalFromLocalVector(cell_U,U_Vector,UdirConstraint_RHS);
-
-	  // Lagrange Multiplier for U
-	  auto cell_TrU_Dir
-	    = DirVolumeToSurfaceTriangulationMap.at(face_U);
-
-	  TrU_Dir_U_Matrix = 0;
-	  fe_v_TraceU_Dir.reinit(cell_TrU_Dir);
-	  assembleTraceULocalDir(fe_v_TraceU_Dir,
-				 fe_v_face_U,
-				 TrU_Dir_U_Matrix);
-
-	  InsertGlobalFromLocal(cell_TrU_Dir,
-				cell_U,
-				TrU_Dir_U_Matrix,
-				TraceUDir);
-
-	  // Constraint Vector
-	  TrU_Dir_U_Vector = 0;
-	  assembleConstraintUDirMinusLocal(fe_v_TraceU_Dir,TrU_Dir_U_Vector);
-	  InsertGlobalFromLocalVectorNEW(cell_TrU_Dir,
-					 TrU_Dir_U_Vector,
-					 constraintDirU);
+  	fe_v_face_U.reinit(cell_U,face_no);
+  	fe_v_face_Q.reinit(cell_Q,face_no);
 
 
-	}
-	else if(boundary_ids_Neu_plus
-		.count(face_sys->boundary_id()) != 0){
-	  //std::cout << "On Neuman Boundary Plus" << std::endl;
+  	if( boundary_ids_Dir_plus
+  	    .count(face_sys->boundary_id()) != 0){
+  	  //Dir plus
+  	  // FluxUFromQBoundary
+  	  U_Q_Matrix = 0;
+  	  assembleFluxUFromQBoundaryLocal(fe_v_face_U,fe_v_face_Q,U_Q_Matrix);
+  	  InsertGlobalFromLocal(cell_U,
+  				cell_Q,
+  				U_Q_Matrix,
+  				FluxBoundaryUFromQ);
 
-	  // FluxUFromQBoundary
-	  U_Q_Matrix = 0;
-	  assembleFluxUFromQBoundaryLocal(fe_v_face_U,fe_v_face_Q,U_Q_Matrix);
-	  InsertGlobalFromLocal(cell_U,
-				cell_Q,
-				U_Q_Matrix,
-				FluxBoundaryUFromQ);
-	  auto cell_TrU_Neu
-	    = NeuVolumeToSurfaceTriangulationMap.at(face_U);
-	  fe_v_TraceU_Neu.reinit(cell_TrU_Neu);
-	  fe_v_face_Q.reinit(cell_Q,face_no);
+  	  Q_Vector = 0;
+  	  assembleQ_RHS_FromDirPlusLocal(fe_v_face_Q,Q_Vector);
+  	  InsertGlobalFromLocalVector(cell_Q,Q_Vector,Q_MinusRHS);
+  	  //Q_Vector *= -1.0;
+  	  //InsertGlobalFromLocalVector(cell_Q,Q_Vector,Q_RHS);
+  	}
 
-	  TrU_Neu_Q_Matrix = 0;
-	  assembleTraceQLocalNeu
-	    (fe_v_TraceU_Neu,
-	     fe_v_face_Q,
-	     TrU_Neu_Q_Matrix);
-	  InsertGlobalFromLocal
-	    (cell_TrU_Neu,
-	     cell_Q,
-	     TrU_Neu_Q_Matrix,
-	     TraceQNeu);
+  	else if(boundary_ids_Dir_minus.
+  		count(face_sys->boundary_id()) != 0){
 
-	  //Constraint for Q;
+  	  // FluxQFromUBoundary
+  	  Q_U_Matrix = 0;
+  	  assembleFluxQFromUBoundaryLocal(fe_v_face_Q,fe_v_face_U,Q_U_Matrix);
+  	  InsertGlobalFromLocal(cell_Q,cell_U,Q_U_Matrix,FluxBoundaryQFromU);
+
+  	  // Boundary massMatrix;
+  	  U_U_Matrix_Boundary_temp = 0;
+  	  assembleBoundaryMassULocal(fe_v_face_U, U_U_Matrix_Boundary_temp);
+  	  InsertGlobalFromLocal(cell_U,
+  				cell_U,
+  				U_U_Matrix_Boundary_temp,
+  				BoundaryMassU);
+
+  	  U_U_Matrix_Boundary.add(1.0, U_U_Matrix_Boundary_temp);
+
+  	  // Dirichelet Boundary vector;
+  	  U_Vector = 0;
+  	  assembleConstraintUDirMinusLocalNOTRACE(fe_v_face_U,U_Vector);
+  	  InsertGlobalFromLocalVector(cell_U,U_Vector,UdirConstraint_RHS);
+
+  	  // Lagrange Multiplier for U
+  	  auto cell_TrU_Dir
+  	    = DirVolumeToSurfaceTriangulationMap.at(face_U);
+
+  	  TrU_Dir_U_Matrix = 0;
+  	  fe_v_TraceU_Dir.reinit(cell_TrU_Dir);
+  	  assembleTraceULocalDir(fe_v_TraceU_Dir,
+  				 fe_v_face_U,
+  				 TrU_Dir_U_Matrix);
+
+  	  InsertGlobalFromLocal(cell_TrU_Dir,
+  				cell_U,
+  				TrU_Dir_U_Matrix,
+  				TraceUDir);
+
+  	  // Constraint Vector
+  	  TrU_Dir_U_Vector = 0;
+  	  assembleConstraintUDirMinusLocal(fe_v_TraceU_Dir,TrU_Dir_U_Vector);
+  	  InsertGlobalFromLocalVectorNEW(cell_TrU_Dir,
+  					 TrU_Dir_U_Vector,
+  					 constraintDirU);
+
+
+  	}
+  	else if(boundary_ids_Neu_plus
+  		.count(face_sys->boundary_id()) != 0){
+  	  //std::cout << "On Neuman Boundary Plus" << std::endl;
+
+  	  // FluxUFromQBoundary
+  	  U_Q_Matrix = 0;
+  	  assembleFluxUFromQBoundaryLocal(fe_v_face_U,fe_v_face_Q,U_Q_Matrix);
+  	  InsertGlobalFromLocal(cell_U,
+  				cell_Q,
+  				U_Q_Matrix,
+  				FluxBoundaryUFromQ);
+  	  auto cell_TrU_Neu
+  	    = NeuVolumeToSurfaceTriangulationMap.at(face_U);
+  	  fe_v_TraceU_Neu.reinit(cell_TrU_Neu);
+  	  fe_v_face_Q.reinit(cell_Q,face_no);
+
+  	  TrU_Neu_Q_Matrix = 0;
+  	  assembleTraceQLocalNeu
+  	    (fe_v_TraceU_Neu,
+  	     fe_v_face_Q,
+  	     TrU_Neu_Q_Matrix);
+  	  InsertGlobalFromLocal
+  	    (cell_TrU_Neu,
+  	     cell_Q,
+  	     TrU_Neu_Q_Matrix,
+  	     TraceQNeu);
+
+  	  //Constraint for Q;
 
 
 
-	  Q_Q_Matrix_Boundary_temp = 0;
-	  assembleBoundaryMassQLocal(fe_v_face_Q, Q_Q_Matrix_Boundary_temp);
-	  InsertGlobalFromLocal(cell_Q,
-				cell_Q,
-				Q_Q_Matrix_Boundary_temp,
-				BoundaryMassQ);
-	  Q_Q_Matrix_Boundary.add(1.0,Q_Q_Matrix_Boundary_temp);
+  	  Q_Q_Matrix_Boundary_temp = 0;
+  	  assembleBoundaryMassQLocal(fe_v_face_Q, Q_Q_Matrix_Boundary_temp);
+  	  InsertGlobalFromLocal(cell_Q,
+  				cell_Q,
+  				Q_Q_Matrix_Boundary_temp,
+  				BoundaryMassQ);
+  	  Q_Q_Matrix_Boundary.add(1.0,Q_Q_Matrix_Boundary_temp);
 	    
 
 	  	    
-	  TrU_Neu_Q_Vector = 0;
-	  assembleConstraintQNeuPlusLocal(fe_v_TraceU_Neu,
-					  fe_v_face_Q,
-					  TrU_Neu_Q_Vector);
-	  InsertGlobalFromLocalVectorNEW(cell_TrU_Neu,
-					 TrU_Neu_Q_Vector,
-					 constraintNeuQ);
-	  Q_Vector = 0;
-	  assembleConstraintQNeuPlusLocalNOTRACE(fe_v_face_Q,
-						 Q_Vector); 
+  	  TrU_Neu_Q_Vector = 0;
+  	  assembleConstraintQNeuPlusLocal(fe_v_TraceU_Neu,
+  					  fe_v_face_Q,
+  					  TrU_Neu_Q_Vector);
+  	  InsertGlobalFromLocalVectorNEW(cell_TrU_Neu,
+  					 TrU_Neu_Q_Vector,
+  					 constraintNeuQ);
+  	  Q_Vector = 0;
+  	  assembleConstraintQNeuPlusLocalNOTRACE(fe_v_face_Q,
+  						 Q_Vector); 
 	  
-	  InsertGlobalFromLocalVector(cell_Q, Q_Vector, QneuConstraint_RHS);
+  	  InsertGlobalFromLocalVector(cell_Q, Q_Vector, QneuConstraint_RHS);
 					  
 
 
-	}
-	else if(boundary_ids_Neu_minus
-		.count(face_sys->boundary_id() ) != 0){
-	  //std::cout << "On Neuman Boundary minus" << std::endl;
+  	}
+  	else if(boundary_ids_Neu_minus
+  		.count(face_sys->boundary_id() ) != 0){
+  	  //std::cout << "On Neuman Boundary minus" << std::endl;
 
-	  // FluxQFromUBoundary
-	  Q_U_Matrix = 0;
-	  assembleFluxQFromUBoundaryLocal(fe_v_face_Q,fe_v_face_U,Q_U_Matrix);
-	  InsertGlobalFromLocal(cell_Q,cell_U,Q_U_Matrix,FluxBoundaryQFromU);
+  	  // FluxQFromUBoundary
+  	  Q_U_Matrix = 0;
+  	  assembleFluxQFromUBoundaryLocal(fe_v_face_Q,fe_v_face_U,Q_U_Matrix);
+  	  InsertGlobalFromLocal(cell_Q,cell_U,Q_U_Matrix,FluxBoundaryQFromU);
 
-	  U_Vector = 0;
-	  assembleQ_RHS_FromNeuMinusLocal(fe_v_face_U, U_Vector);
-	  InsertGlobalFromLocalVector(cell_U,U_Vector,U_MinusRHS);
-	}
+  	  U_Vector = 0;
+  	  assembleQ_RHS_FromNeuMinusLocal(fe_v_face_U, U_Vector);
+  	  InsertGlobalFromLocalVector(cell_U,U_Vector,U_MinusRHS);
+  	}
 
-	else if(boundary_ids_Rob_plus
-		.count(face_sys->boundary_id() ) != 0){
-	  std::cout << "On Robin Boundary plus" << std::endl;
-	  // TODO:  Turn this into a dealii assertion.
-	  std::cerr << "Robin BC's are not implemented yet" << std::endl;
-	  std::abort();
-	  //std::cout << "Robin Boundary" << std::endl;
-	}
+  	else if(boundary_ids_Rob_plus
+  		.count(face_sys->boundary_id() ) != 0){
+  	  std::cout << "On Robin Boundary plus" << std::endl;
+  	  // TODO:  Turn this into a dealii assertion.
+  	  std::cerr << "Robin BC's are not implemented yet" << std::endl;
+  	  std::abort();
+  	  //std::cout << "Robin Boundary" << std::endl;
+  	}
 
-	else if(boundary_ids_Rob_minus
-		.count(face_sys->boundary_id() ) != 0){
-	  std::cout << "On Robin Boundary minus" << std::endl;
-	  // TODO:  Turn this into a dealii assertion.
-	  std::cerr << "Robin BC's are not implemented yet" << std::endl;
-	  std::abort();
-	  //std::cout << "Robin Boundary" << std::endl;
-	}
+  	else if(boundary_ids_Rob_minus
+  		.count(face_sys->boundary_id() ) != 0){
+  	  std::cout << "On Robin Boundary minus" << std::endl;
+  	  // TODO:  Turn this into a dealii assertion.
+  	  std::cerr << "Robin BC's are not implemented yet" << std::endl;
+  	  std::abort();
+  	  //std::cout << "Robin Boundary" << std::endl;
+  	}
 
-	else {
-	  //TODO:  Change this to a dealii assert
-	  std::cerr
-	    << "There is a face on the boundary"
-	    << "that isn't assigned a boundary condition."
-	    << std::endl;
-	  std::abort();
-	}
+  	else {
+  	  //TODO:  Change this to a dealii assert
+  	  std::cerr
+  	    << "There is a face on the boundary"
+  	    << "that isn't assigned a boundary condition."
+  	    << std::endl;
+  	  std::abort();
+  	}
       }
 
       else{
-	//now we know that the current face is not at a boundary
-	//grvy_timer_begin("something");
-	Assert(
-	       cell_sys-> neighbor(face_no).state()
-	       == dealii::IteratorState::valid,
-	       dealii::ExcInternalError() );
+  	//now we know that the current face is not at a boundary
+  	//grvy_timer_begin("something");
+  	Assert(
+  	       cell_sys-> neighbor(face_no).state()
+  	       == dealii::IteratorState::valid,
+  	       dealii::ExcInternalError() );
 
-	typename
-	  dealii::DoFHandler<dim>::cell_iterator
-	  neighbor_U = cell_U->neighbor(face_no),
-	  neighbor_Q = cell_Q->neighbor(face_no);
-	if(face_sys->has_children()){
-	  //grvy_timer_begin("face_sys->has_children()");
-	  const unsigned int neighbor2 =
-	    cell_sys->neighbor_face_no(face_no);
-	  const unsigned int neighbor2_U =
-	    cell_U->neighbor_face_no(face_no);
-	  const unsigned int neighbor2_Q =
-	    cell_Q->neighbor_face_no(face_no);
+  	typename
+  	  dealii::DoFHandler<dim>::cell_iterator
+  	  neighbor_U = cell_U->neighbor(face_no),
+  	  neighbor_Q = cell_Q->neighbor(face_no);
+  	if(face_sys->has_children()){
+  	  //grvy_timer_begin("face_sys->has_children()");
+  	  const unsigned int neighbor2 =
+  	    cell_sys->neighbor_face_no(face_no);
+  	  const unsigned int neighbor2_U =
+  	    cell_U->neighbor_face_no(face_no);
+  	  const unsigned int neighbor2_Q =
+  	    cell_Q->neighbor_face_no(face_no);
 
-	  assert(neighbor2 == neighbor2_U);
-	  assert(neighbor2 == neighbor2_Q);
-	  for( unsigned int subface_no = 0;
-	       subface_no < face_sys->number_of_children();
-	       ++subface_no){
-	    const typename dealii::DoFHandler<dim>::cell_iterator
-	      neighbor_child_sys
-	      = cell_sys->neighbor_child_on_subface(face_no, subface_no),
-	      neighbor_child_U
-	      = cell_U->neighbor_child_on_subface(face_no, subface_no),
-	      neighbor_child_Q
-	      = cell_Q->neighbor_child_on_subface(face_no, subface_no);
+  	  assert(neighbor2 == neighbor2_U);
+  	  assert(neighbor2 == neighbor2_Q);
+  	  for( unsigned int subface_no = 0;
+  	       subface_no < face_sys->number_of_children();
+  	       ++subface_no){
+  	    const typename dealii::DoFHandler<dim>::cell_iterator
+  	      neighbor_child_sys
+  	      = cell_sys->neighbor_child_on_subface(face_no, subface_no),
+  	      neighbor_child_U
+  	      = cell_U->neighbor_child_on_subface(face_no, subface_no),
+  	      neighbor_child_Q
+  	      = cell_Q->neighbor_child_on_subface(face_no, subface_no);
 
-	    const auto
-	      neighbor_U_for_assembly = neighbor_child_U,
-	      neighbor_Q_for_assembly = neighbor_child_Q;
-
-
-	    Assert(!(neighbor_child_sys->has_children())
-		   , dealii::ExcInternalError() );
-
-	    dealii::FESubfaceValues<dim>
-	      fe_v_self_U(mapping, feU, face_quadrature_formula,
-			  face_update_flags);
-
-	    dealii::FESubfaceValues<dim>
-	      fe_v_self_Q(mapping,
-			  feQ,
-			  face_quadrature_formula,
-			  face_update_flags);
-
-	    dealii::FEFaceValues<dim>
-	      fe_v_neig_U(mapping,
-			  feU,
-			  face_quadrature_formula,
-			  face_update_flags);
-
-	    dealii::FEFaceValues<dim>
-	      fe_v_neig_Q(mapping,
-			  feQ,
-			  face_quadrature_formula,
-			  face_update_flags);
-
-	    fe_v_self_U.reinit(cell_U,face_no,subface_no);
-	    fe_v_self_Q.reinit(cell_Q,face_no,subface_no);
-	    fe_v_neig_U.reinit(neighbor_child_U,neighbor2);
-	    fe_v_neig_Q.reinit(neighbor_child_Q,neighbor2);
-
-	    assembleFluxLocals(fe_v_self_U,
-			       fe_v_neig_U,
-			       fe_v_self_Q,
-			       fe_v_neig_Q,
-			       cell_U,
-			       cell_Q,
-			       neighbor_U_for_assembly,
-			       neighbor_Q_for_assembly,
-			       U_Q_Matrix,
-			       U_Q_Matrix_2,
-			       Q_U_Matrix,
-			       Q_U_Matrix_2);
-
-	  }
-	  //grvy_timer_end("face_sys->has_children()");
-	}
-	else{ // !(face->has_children())
-	  if(!(cell_sys->neighbor_is_coarser( face_no ))){
-	    //grvy_timer_begin("!cell_sys->neighbor_is_coarser");
-	    //Now we know that the neighbor's face is neither finer nor coarser
-
-	    //grvy_timer_begin("line1");
-	    const unsigned int neighbor2
-	      = cell_sys->neighbor_of_neighbor(face_no);
-	    //grvy_timer_end("line1");
-
-	    //grvy_timer_begin("line2");
-	    dealii::FEFaceValues<dim>
-	      fe_v_self_U(mapping,feU,face_quadrature_formula,
-			  face_update_flags);
-	    //grvy_timer_end("line2");
+  	    const auto
+  	      neighbor_U_for_assembly = neighbor_child_U,
+  	      neighbor_Q_for_assembly = neighbor_child_Q;
 
 
-	    //grvy_timer_begin("line3");
-	    dealii::FEFaceValues<dim>
-	      fe_v_self_Q(mapping,
-			  feQ,
-			  face_quadrature_formula,
-			  face_update_flags);
-	    //grvy_timer_end("line3");
+  	    Assert(!(neighbor_child_sys->has_children())
+  		   , dealii::ExcInternalError() );
+
+  	    dealii::FESubfaceValues<dim>
+  	      fe_v_self_U(mapping, feU, face_quadrature_formula,
+  			  face_update_flags);
+
+  	    dealii::FESubfaceValues<dim>
+  	      fe_v_self_Q(mapping,
+  			  feQ,
+  			  face_quadrature_formula,
+  			  face_update_flags);
+
+  	    dealii::FEFaceValues<dim>
+  	      fe_v_neig_U(mapping,
+  			  feU,
+  			  face_quadrature_formula,
+  			  face_update_flags);
+
+  	    dealii::FEFaceValues<dim>
+  	      fe_v_neig_Q(mapping,
+  			  feQ,
+  			  face_quadrature_formula,
+  			  face_update_flags);
+
+  	    fe_v_self_U.reinit(cell_U,face_no,subface_no);
+  	    fe_v_self_Q.reinit(cell_Q,face_no,subface_no);
+  	    fe_v_neig_U.reinit(neighbor_child_U,neighbor2);
+  	    fe_v_neig_Q.reinit(neighbor_child_Q,neighbor2);
+
+  	    assembleFluxLocals(fe_v_self_U,
+  			       fe_v_neig_U,
+  			       fe_v_self_Q,
+  			       fe_v_neig_Q,
+  			       cell_U,
+  			       cell_Q,
+  			       neighbor_U_for_assembly,
+  			       neighbor_Q_for_assembly,
+  			       U_Q_Matrix,
+  			       U_Q_Matrix_2,
+  			       Q_U_Matrix,
+  			       Q_U_Matrix_2);
+
+  	  }
+  	  //grvy_timer_end("face_sys->has_children()");
+  	}
+  	else{ // !(face->has_children())
+  	  if(!(cell_sys->neighbor_is_coarser( face_no ))){
+  	    //grvy_timer_begin("!cell_sys->neighbor_is_coarser");
+  	    //Now we know that the neighbor's face is neither finer nor coarser
+
+  	    //grvy_timer_begin("line1");
+  	    const unsigned int neighbor2
+  	      = cell_sys->neighbor_of_neighbor(face_no);
+  	    //grvy_timer_end("line1");
+
+  	    //grvy_timer_begin("line2");
+  	    dealii::FEFaceValues<dim>
+  	      fe_v_self_U(mapping,feU,face_quadrature_formula,
+  			  face_update_flags);
+  	    //grvy_timer_end("line2");
 
 
-	    //grvy_timer_begin("line4");
-	    dealii::FEFaceValues<dim>
-	      fe_v_neig_U(mapping,
-			  feU,
-			  face_quadrature_formula,
-			  face_update_flags);
-	    //grvy_timer_end("line4");
+  	    //grvy_timer_begin("line3");
+  	    dealii::FEFaceValues<dim>
+  	      fe_v_self_Q(mapping,
+  			  feQ,
+  			  face_quadrature_formula,
+  			  face_update_flags);
+  	    //grvy_timer_end("line3");
 
-	    //grvy_timer_begin("line5");
-	    dealii::FEFaceValues<dim>
-	      fe_v_neig_Q(mapping,
-			  feQ,
-			  face_quadrature_formula,
-			  face_update_flags);
-	    //grvy_timer_end("line5");
 
-	    //grvy_timer_begin("line6");
-	    fe_v_self_U.reinit(cell_U,face_no);
-	    fe_v_self_Q.reinit(cell_Q,face_no);
-	    fe_v_neig_U.reinit(neighbor_U, neighbor2);
-	    fe_v_neig_Q.reinit(neighbor_Q, neighbor2);
-	    //grvy_timer_end("line6");
+  	    //grvy_timer_begin("line4");
+  	    dealii::FEFaceValues<dim>
+  	      fe_v_neig_U(mapping,
+  			  feU,
+  			  face_quadrature_formula,
+  			  face_update_flags);
+  	    //grvy_timer_end("line4");
 
-	    //grvy_timer_begin("line7");
-	    const auto
-	      neighbor_U_for_assembly = neighbor_U,
-	      neighbor_Q_for_assembly = neighbor_Q;
-	    //grvy_timer_end("line7");
+  	    //grvy_timer_begin("line5");
+  	    dealii::FEFaceValues<dim>
+  	      fe_v_neig_Q(mapping,
+  			  feQ,
+  			  face_quadrature_formula,
+  			  face_update_flags);
+  	    //grvy_timer_end("line5");
 
-	    //grvy_timer_begin("assemble flux locals");
-	    assembleFluxLocals
-	      (fe_v_self_U,
-	       fe_v_neig_U,
-	       fe_v_self_Q,
-	       fe_v_neig_Q,
-	       cell_U,
-	       cell_Q,
-	       neighbor_U_for_assembly,
-	       neighbor_Q_for_assembly,
-	       U_Q_Matrix,
-	       U_Q_Matrix_2,
-	       Q_U_Matrix,
-	       Q_U_Matrix_2);
-	    //grvy_timer_end("assemble flux locals");
-	    //grvy_timer_end("!cell_sys->neighbor_is_coarser");
-	  } else {
-	    // Ok, now we now that we are in the interior, on a face whose
-	    // neighbor is coarser.  This is the opposite of the situation
-	    // of the first thing we checked.
+  	    //grvy_timer_begin("line6");
+  	    fe_v_self_U.reinit(cell_U,face_no);
+  	    fe_v_self_Q.reinit(cell_Q,face_no);
+  	    fe_v_neig_U.reinit(neighbor_U, neighbor2);
+  	    fe_v_neig_Q.reinit(neighbor_Q, neighbor2);
+  	    //grvy_timer_end("line6");
 
+  	    //grvy_timer_begin("line7");
+  	    const auto
+  	      neighbor_U_for_assembly = neighbor_U,
+  	      neighbor_Q_for_assembly = neighbor_Q;
+  	    //grvy_timer_end("line7");
+
+  	    //grvy_timer_begin("assemble flux locals");
+  	    assembleFluxLocals
+  	      (fe_v_self_U,
+  	       fe_v_neig_U,
+  	       fe_v_self_Q,
+  	       fe_v_neig_Q,
+  	       cell_U,
+  	       cell_Q,
+  	       neighbor_U_for_assembly,
+  	       neighbor_Q_for_assembly,
+  	       U_Q_Matrix,
+  	       U_Q_Matrix_2,
+  	       Q_U_Matrix,
+  	       Q_U_Matrix_2);
+  	    //grvy_timer_end("assemble flux locals");
+  	    //grvy_timer_end("!cell_sys->neighbor_is_coarser");
+  	  } else {
+  	    // Ok, now we now that we are in the interior, on a face whose
+  	    // neighbor is coarser.  This is the opposite of the situation
+  	    // of the first thing we checked.
 
 	    const std::pair<unsigned int, unsigned int> neighbor_face_subface
-	      = cell_sys->neighbor_of_coarser_neighbor(face_no);
+  	      = cell_sys->neighbor_of_coarser_neighbor(face_no);
 
-	    const unsigned int nFace_no = neighbor_face_subface.first;
-	    const unsigned int nSubface_no = neighbor_face_subface.second;
+  	    const unsigned int nFace_no = neighbor_face_subface.first;
+  	    const unsigned int nSubface_no = neighbor_face_subface.second;
 
-	    //TODO:  Change to a dealii style assert
-	    assert
-	      (cell_sys
-	       ->neighbor(face_no)
-	       ->face(nFace_no)
-	       ->child(nSubface_no)
-	       == cell_sys->face(face_no)
-	       );
+  	    //TODO:  Change to a dealii style assert
+  	    assert
+  	      (cell_sys
+  	       ->neighbor(face_no)
+  	       ->face(nFace_no)
+  	       ->child(nSubface_no)
+  	       == cell_sys->face(face_no)
+  	       );
 
-	    typename dealii::DoFHandler<dim>::cell_iterator
-	      neighbor_U = cell_U->neighbor(face_no),
-	      neighbor_Q = cell_Q->neighbor(face_no);
+  	    typename dealii::DoFHandler<dim>::cell_iterator
+  	      neighbor_U = cell_U->neighbor(face_no),
+  	      neighbor_Q = cell_Q->neighbor(face_no);
 
-	    dealii::FEFaceValues<dim>
-	      fe_v_self_U(mapping,feU,face_quadrature_formula,
-			  face_update_flags);
+  	    dealii::FEFaceValues<dim>
+  	      fe_v_self_U(mapping,feU,face_quadrature_formula,
+  			  face_update_flags);
 
-	    dealii::FEFaceValues<dim>
-	      fe_v_self_Q(mapping,
-			  feQ,
-			  face_quadrature_formula,
-			  face_update_flags);
+  	    dealii::FEFaceValues<dim>
+  	      fe_v_self_Q(mapping,
+  			  feQ,
+  			  face_quadrature_formula,
+  			  face_update_flags);
 
-	    dealii::FESubfaceValues<dim>
-	      fe_v_neig_U(mapping,
-			  feU,
-			  face_quadrature_formula,
-			  face_update_flags);
+  	    dealii::FESubfaceValues<dim>
+  	      fe_v_neig_U(mapping,
+  			  feU,
+  			  face_quadrature_formula,
+  			  face_update_flags);
 
-	    dealii::FESubfaceValues<dim>
-	      fe_v_neig_Q(mapping,
-			  feQ,
-			  face_quadrature_formula,
-			  face_update_flags);
+  	    dealii::FESubfaceValues<dim>
+  	      fe_v_neig_Q(mapping,
+  			  feQ,
+  			  face_quadrature_formula,
+  			  face_update_flags);
 
-	    fe_v_self_U.reinit(cell_U,face_no);
-	    fe_v_self_Q.reinit(cell_Q,face_no);
-	    fe_v_neig_U.reinit(neighbor_U,nFace_no,nSubface_no);
-	    fe_v_neig_Q.reinit(neighbor_Q,nFace_no,nSubface_no);
+  	    fe_v_self_U.reinit(cell_U,face_no);
+  	    fe_v_self_Q.reinit(cell_Q,face_no);
+  	    fe_v_neig_U.reinit(neighbor_U,nFace_no,nSubface_no);
+  	    fe_v_neig_Q.reinit(neighbor_Q,nFace_no,nSubface_no);
 
-	    const auto 
-	      neighbor_U_for_assembly = neighbor_U,
-	      neighbor_Q_for_assembly = neighbor_Q;
-	    assembleFluxLocals
-	      (fe_v_self_U,
-	       fe_v_neig_U,
-	       fe_v_self_Q,
-	       fe_v_neig_Q,
-	       cell_U,
-	       cell_Q,
-	       neighbor_U_for_assembly,
-	       neighbor_Q_for_assembly,
-	       U_Q_Matrix,
-	       U_Q_Matrix_2,
-	       Q_U_Matrix,
-	       Q_U_Matrix_2);
-	  }
-	}
-	//grvy_timer_end("something");
+  	    const auto 
+  	      neighbor_U_for_assembly = neighbor_U,
+  	      neighbor_Q_for_assembly = neighbor_Q;
+  	    assembleFluxLocals
+  	      (fe_v_self_U,
+  	       fe_v_neig_U,
+  	       fe_v_self_Q,
+  	       fe_v_neig_Q,
+  	       cell_U,
+  	       cell_Q,
+  	       neighbor_U_for_assembly,
+  	       neighbor_Q_for_assembly,
+  	       U_Q_Matrix,
+  	       U_Q_Matrix_2,
+  	       Q_U_Matrix,
+  	       Q_U_Matrix_2);
+  	  }
+  	}
+  	//grvy_timer_end("something");
       } // End of face not at boundary
 
     } // End of loops through faces
@@ -1966,6 +2226,37 @@ EllipticProblem<dim>::assemble_system()
       //grvy_timer_begin("compute svds");
 
     {
+      heat::myMatrixTools::ChopMatrix(U_U_Matrix_Boundary, tolerance);
+      dealii::LAPACKFullMatrix<heat::real> tempLAPACKMatrix;
+      dealii::FullMatrix<heat::real> myEigenvectors;
+
+      dealii::Vector<heat::real> myEigenvalues;
+      tempLAPACKMatrix.copy_from(U_U_Matrix_Boundary);
+
+      tempLAPACKMatrix
+  	.compute_eigenvalues_symmetric(-2,
+  				       100,
+  				       1e-38,
+  				       myEigenvalues,
+  				       myEigenvectors);
+	
+      assert(myEigenvalues.size() == U_U_Matrix_Boundary.m() );
+	
+      InsertGlobalFromLocal(cell_U,cell_U, myEigenvectors, Svd_U_for_Dir);
+
+      U_U_Matrix_Boundary = 0;
+
+      for(unsigned int i = 0; i < myEigenvalues.size(); ++i){
+  	if(fabs(myEigenvalues[i])  < tolerance) {
+  	  myEigenvalues[i] = 0.0;
+  	}
+  	U_U_Matrix_Boundary(i,i) = myEigenvalues[i];
+      }
+	
+      InsertGlobalFromLocal(cell_U,
+  			    cell_U,
+  			    U_U_Matrix_Boundary,
+  			    Svd_Sigma_for_Dir);
     }
 
     {	
@@ -1977,11 +2268,11 @@ EllipticProblem<dim>::assemble_system()
       tempLAPACKMatrix.copy_from(Q_Q_Matrix_Boundary);
 
       tempLAPACKMatrix
-	.compute_eigenvalues_symmetric(-2,
-				       100,
-				       1e-38,
-				       myEigenvalues,
-				       myEigenvectors);
+  	.compute_eigenvalues_symmetric(-2,
+  				       100,
+  				       1e-38,
+  				       myEigenvalues,
+  				       myEigenvectors);
 	
       assert(myEigenvalues.size() == Q_Q_Matrix_Boundary.m() );
 	
@@ -1990,16 +2281,16 @@ EllipticProblem<dim>::assemble_system()
       Q_Q_Matrix_Boundary = 0;
 
       for(unsigned int i = 0; i < myEigenvalues.size(); ++i){
-	if(fabs(myEigenvalues[i])  < tolerance) {
-	  myEigenvalues[i] = 0.0;
-	}
-	Q_Q_Matrix_Boundary(i,i) = myEigenvalues[i];
+  	if(fabs(myEigenvalues[i])  < tolerance) {
+  	  myEigenvalues[i] = 0.0;
+  	}
+  	Q_Q_Matrix_Boundary(i,i) = myEigenvalues[i];
       }
 	
       InsertGlobalFromLocal(cell_Q,
-			    cell_Q,
-			    Q_Q_Matrix_Boundary,
-			    Svd_Sigma_for_Neu);
+  			    cell_Q,
+  			    Q_Q_Matrix_Boundary,
+  			    Svd_Sigma_for_Neu);
     }
   } // End of loops through cells
 
@@ -2015,12 +2306,12 @@ EllipticProblem<dim>::assemble_system()
 
     for(unsigned int i = 0; i < Svd_Sigma_for_Dir.m(); ++i){
       if( fabs( Svd_Sigma_for_Dir(i,i) ) > tolerance ){
-	++rankBoundaryMassU;
-	Prows.emplace_back(i);
+  	++rankBoundaryMassU;
+  	Prows.emplace_back(i);
       }
       else{
-	++nullityBoundaryMassU;
-	Qrows.emplace_back(i);
+  	++nullityBoundaryMassU;
+  	Qrows.emplace_back(i);
       }
     }
 
@@ -2044,11 +2335,11 @@ EllipticProblem<dim>::assemble_system()
 
     for(unsigned int i = 0; i < Svd_Sigma_for_Neu.m(); ++i){
       if (fabs( Svd_Sigma_for_Neu(i,i) ) > tolerance ){
-	++rankBoundaryMassQ;
-	Rrows.emplace_back(i);
+  	++rankBoundaryMassQ;
+  	Rrows.emplace_back(i);
       } else {
-	++nullityBoundaryMassQ;
-	Srows.emplace_back(i);
+  	++nullityBoundaryMassQ;
+  	Srows.emplace_back(i);
       }
     }
 
@@ -2072,22 +2363,22 @@ EllipticProblem<dim>::assemble_system()
 
   //TODO:  Not the correct spot for this.
 
-  //grvy_timer_begin("TotalUFromQ summing");
-  const heat::real theta = 0.0;
-  TotalUFromQ.copy_from(StiffUFromQ);
-  TotalUFromQ.add(-1.0 * theta,FluxCenterUFromQ);
-  TotalUFromQ.add(-1.0 * (1-theta),FluxPosUFromQ);
-  TotalUFromQ.add(-1.0 * (1-theta),FluxNegUFromQ);
-  TotalUFromQ.add( -1.0 , FluxBoundaryUFromQ);
-  //grvy_timer_end("TotalUFromQ summing");
+  // //grvy_timer_begin("TotalUFromQ summing");
+  // const heat::real theta = 0.0;
+  // TotalUFromQ.copy_from(StiffUFromQ);
+  // TotalUFromQ.add(-1.0 * theta,FluxCenterUFromQ);
+  // TotalUFromQ.add(-1.0 * (1-theta),FluxPosUFromQ);
+  // TotalUFromQ.add(-1.0 * (1-theta),FluxNegUFromQ);
+  // TotalUFromQ.add( -1.0 , FluxBoundaryUFromQ);
+  // //grvy_timer_end("TotalUFromQ summing");
 
-  //grvy_timer_begin("TotalQFromU summing");
-  TotalQFromU.copy_from(StiffQFromU);
-  TotalQFromU.add(-1.0 * theta,FluxCenterQFromU);
-  TotalQFromU.add(-1.0 * (1.0 - theta), FluxPosQFromU);
-  TotalQFromU.add(-1.0 * (1.0 - theta), FluxNegQFromU);
-  TotalQFromU.add(-1.0, FluxBoundaryQFromU);
-  //grvy_timer_end("TotalQFromU summing");
+  // //grvy_timer_begin("TotalQFromU summing");
+  // TotalQFromU.copy_from(StiffQFromU);
+  // TotalQFromU.add(-1.0 * theta,FluxCenterQFromU);
+  // TotalQFromU.add(-1.0 * (1.0 - theta), FluxPosQFromU);
+  // TotalQFromU.add(-1.0 * (1.0 - theta), FluxNegQFromU);
+  // TotalQFromU.add(-1.0, FluxBoundaryQFromU);
+  // //grvy_timer_end("TotalQFromU summing");
 }
 
 template<int dim>
@@ -2104,22 +2395,22 @@ EllipticProblem<dim>
   list.emplace_back(&Svd_Sigma_for_Dir,  "Svd_Sigma_for_Dir.mtx");
   list.emplace_back(&InverseMassU,       "InverseMassU.mtx");
   list.emplace_back(&StiffUFromQ,        "StiffUFromQ.mtx");
-  list.emplace_back(&FluxPosUFromQ,      "FluxPosUFromQ.mtx");
-  list.emplace_back(&FluxNegUFromQ,      "FluxNegUFromQ.mtx");
-  list.emplace_back(&FluxCenterUFromQ,   "FluxCenterUFromQ.mtx");
-  list.emplace_back(&FluxBoundaryUFromQ, "FluxBoundaryUFromQ.mtx");
+  //list.emplace_back(&FluxPosUFromQ,      "FluxPosUFromQ.mtx");
+  //list.emplace_back(&FluxNegUFromQ,      "FluxNegUFromQ.mtx");
+  //list.emplace_back(&FluxCenterUFromQ,   "FluxCenterUFromQ.mtx");
+  //list.emplace_back(&FluxBoundaryUFromQ, "FluxBoundaryUFromQ.mtx");
   list.emplace_back(&TotalUFromQ,        "TotalUFromQ.mtx");
   list.emplace_back(&MassQ,              "MassQ.mtx");
   list.emplace_back(&InverseMassQ,       "InverseMassQ.mtx");
-  list.emplace_back(&InverseMassQCholesky,"InverseMassQCholesky.mtx");
+  //list.emplace_back(&InverseMassQCholesky,"InverseMassQCholesky.mtx");
   list.emplace_back(&BoundaryMassQ,      "BoundaryMassQ.mtx");
   list.emplace_back(&Svd_U_for_Neu,      "Svd_U_for_Neu.mtx");
   list.emplace_back(&Svd_Sigma_for_Neu,  "Svd_Sigma_for_Neu.mtx");
   list.emplace_back(&StiffQFromU,        "StiffQFromU.mtx");
-  list.emplace_back(&FluxPosQFromU,      "FluxPosQFromU.mtx");
-  list.emplace_back(&FluxNegQFromU,      "FluxNegQFromU.mtx");
-  list.emplace_back(&FluxCenterQFromU,   "FluxCenterQFromU.mtx");
-  list.emplace_back(&FluxBoundaryQFromU, "FluxBoundaryQFromU.mtx");
+  //list.emplace_back(&FluxPosQFromU,      "FluxPosQFromU.mtx");
+  //list.emplace_back(&FluxNegQFromU,      "FluxNegQFromU.mtx");
+  //list.emplace_back(&FluxCenterQFromU,   "FluxCenterQFromU.mtx");
+  //list.emplace_back(&FluxBoundaryQFromU, "FluxBoundaryQFromU.mtx");
   list.emplace_back(&TotalQFromU,        "TotalQFromU.mtx");
 
   for( auto it = list.begin(); it != list.end(); it++){
@@ -2329,7 +2620,7 @@ EllipticProblem<dim>
 			     dealii::FullMatrix<heat::real> & pi_qj_matrix)
 {
   const dealii::FEValuesExtractors::Vector flux(0);
-  const std::vector<heat::real> & JxW = fe_q.get_JxW_values();
+  const std::vector<double> & JxW = fe_q.get_JxW_values();
   const std::vector<dealii::Point<dim> > & normals = fe_q.get_normal_vectors();
   for(unsigned int point = 0; point < fe_q.n_quadrature_points; ++point){
     for(unsigned int i = 0; i < fe_q.dofs_per_cell; ++i){
@@ -2893,7 +3184,7 @@ EllipticProblem<dim>
 (const dealii::FEValuesBase<dim-1,dim> & fe_v_self_TrU,
  const dealii::FEFaceValuesBase<dim> & fe_v_face_Q,
  dealii::Vector<heat::real> & TrU_Q_Vector){
-  const heat::NeumannBoundaryValues<dim> nueBC;
+   const heat::NeumannBoundaryValues<dim> nueBC;
   const auto & JxW = fe_v_self_TrU.get_JxW_values();
   const auto & normals = fe_v_face_Q.get_normal_vectors();
   for(unsigned int point = 0;
@@ -2951,7 +3242,6 @@ EllipticProblem<dim>
 {
 
   const heat::DirichletBoundaryValues<dim> dirBC;
-
 
   const dealii::FEValuesExtractors::Vector flux(0);
   const auto & normals = fe_v_face_Q.get_normal_vectors();
@@ -3309,7 +3599,7 @@ EllipticProblem<dim>::EigenSolveNEW(){
   // 		    reducedUEigenfunctions,
   // 		    eigenvalues.size() );
 
-    const unsigned int num_arnoldi_vectors_UGLY = 2 * n_eigenvalues + 2;
+  const unsigned int num_arnoldi_vectors_UGLY = 2 * n_eigenvalues + 2;
   dealii::ArpackSolver::AdditionalData additional_data_UGLY
     (num_arnoldi_vectors,
      dealii::ArpackSolver::WhichEigenvalues::largest_real_part
@@ -3321,61 +3611,53 @@ EllipticProblem<dim>::EigenSolveNEW(){
 
   dealii::ArpackSolver eigenSolver_UGLY(Eigen_control_UGLY, additional_data);
   std::cout << "About to solve" << std::endl;
-    eigenSolver_UGLY.solve
+  eigenSolver_UGLY.solve
     (schurComp_UGLY,
      smallProduct_UGLY,
      schurCompInverse_UGLY,
      eigenvalues,
      reducedUEigenfunctions,
      eigenvalues.size() );
-    std::cout << "After solve" << std::endl;
-    std::cout << "Construction" << std::endl;
-    const auto Q_From_U_eigen_first_part =
-      (dealii::linear_operator(Svd_U_for_Neu)
-       * dealii::transpose_operator(dealii::linear_operator(SS) ) );
-    //* somethingInverse_UGLY
+  std::cout << "After solve" << std::endl;
+  std::cout << "Construction" << std::endl;
+  const auto Q_From_U_eigen_first_part =
+    (dealii::linear_operator(Svd_U_for_Neu)
+     * dealii::transpose_operator(dealii::linear_operator(SS) ) );
+  //* somethingInverse_UGLY
 
-    const auto Q_From_U_eigen_last_part
-      = dealii::linear_operator(SS)
-      * dealii::transpose_operator(dealii::linear_operator(Svd_U_for_Neu))
-      * dealii::linear_operator(TotalQFromU)
-      * dealii::linear_operator(Svd_U_for_Dir)
-      * dealii::transpose_operator(dealii::linear_operator(QQ));
-
-    std::cout << "Construction Small" << std::endl;
-
+  const auto Q_From_U_eigen_last_part
+    = dealii::linear_operator(SS)
+    * dealii::transpose_operator(dealii::linear_operator(Svd_U_for_Neu))
+    * dealii::linear_operator(TotalQFromU)
+    * dealii::linear_operator(Svd_U_for_Dir)
+    * dealii::transpose_operator(dealii::linear_operator(QQ));
     
-    const auto Q_From_U_eigen
-      = Q_From_U_eigen_first_part
-      * somethingInverse_UGLY
-      * Q_From_U_eigen_last_part;
-    
+  const auto Q_From_U_eigen
+    = Q_From_U_eigen_first_part
+    * somethingInverse_UGLY
+    * Q_From_U_eigen_last_part;
 
+  // const auto Q_From_U_eigen =
 
-    
-
-
-    // const auto Q_From_U_eigen =
-
-    std::cout << "Construction" << std::endl;
-    const auto Q_From_U_eigen_try_number_2 = 
-      (dealii::linear_operator(Svd_U_for_Neu)
-       * dealii::transpose_operator(linear_operator(SS) ) )
-      * (somethingInverse_UGLY 
-	 * (dealii::linear_operator(SS)
-	    * dealii::transpose_operator(dealii::linear_operator(Svd_U_for_Neu) )
-	    * dealii::linear_operator(TotalQFromU)
-	    * dealii::linear_operator(Svd_U_for_Dir)
-	    * dealii::transpose_operator(dealii::linear_operator(QQ) )
-	    )
-	 );
+  std::cout << "Construction" << std::endl;
+  const auto Q_From_U_eigen_try_number_2 = 
+    (dealii::linear_operator(Svd_U_for_Neu)
+     * dealii::transpose_operator(linear_operator(SS) ) )
+    * (somethingInverse_UGLY 
+       * (dealii::linear_operator(SS)
+	  * dealii::transpose_operator(dealii::linear_operator(Svd_U_for_Neu) )
+	  * dealii::linear_operator(TotalQFromU)
+	  * dealii::linear_operator(Svd_U_for_Dir)
+	  * dealii::transpose_operator(dealii::linear_operator(QQ) )
+	  )
+       );
       
-    std::cout << "End Construction" << std::endl;
+  std::cout << "End Construction" << std::endl;
 
-    assert(false);
+  assert(false);
     
-    std::cout << "About to populate for Q" << std::endl;
-    for(unsigned int i = 0; i < eigenvalues.size(); ++i){
+  std::cout << "About to populate for Q" << std::endl;
+  for(unsigned int i = 0; i < eigenvalues.size(); ++i){
     std::cout << "i = \n" << i << std::endl;
     dealii::Vector<heat::real> temp1( QQ.n() );
     std::cout << __LINE__<< std::endl;
@@ -3393,31 +3675,253 @@ EllipticProblem<dim>::EigenSolveNEW(){
     // dealii::Vector<heat::real> temp4(TotalQFromU.m() );
     // dealii::Vector<heat::real> temp5(Svd_U_for_Neu.n() );
     // dealii::Vector<heat::real> temp6(SS.m() );
-      // dealii::Vector<heat::real> temp7(SS.n() );
-      // std::cout << __LINE__<< std::endl;
-      // QQ.Tvmult(temp2, reducedUEigenfunctions[i]); //1
-      // std::cout << __LINE__<< std::endl;
-      // Svd_U_for_Dir.vmult(temp3,temp2);            //2
-      // std::cout << __LINE__<< std::endl;
-      // TotalQFromU.vmult(temp4,temp3);              //3
-      // std::cout << __LINE__<< std::endl;
-      // Svd_U_for_Neu.Tvmult(temp5,temp4);           //4
-      // std::cout << __LINE__<< std::endl;
-      // SS.vmult(temp6, temp5);                      //5
-      // std::cout << __LINE__<< std::endl;
-      // somethingInverse.vmult(reducedQEigenfunctions[i], temp6); //6
-      // std::cout << __LINE__<< std::endl;
-      // SS.Tvmult(temp7, reducedQEigenfunctions[i]);      //7
-      // std::cout << __LINE__<< std::endl;
-      // Svd_U_for_Neu.vmult(QeigenStates[i], temp7);      //8
+    // dealii::Vector<heat::real> temp7(SS.n() );
+    // std::cout << __LINE__<< std::endl;
+    // QQ.Tvmult(temp2, reducedUEigenfunctions[i]); //1
+    // std::cout << __LINE__<< std::endl;
+    // Svd_U_for_Dir.vmult(temp3,temp2);            //2
+    // std::cout << __LINE__<< std::endl;
+    // TotalQFromU.vmult(temp4,temp3);              //3
+    // std::cout << __LINE__<< std::endl;
+    // Svd_U_for_Neu.Tvmult(temp5,temp4);           //4
+    // std::cout << __LINE__<< std::endl;
+    // SS.vmult(temp6, temp5);                      //5
+    // std::cout << __LINE__<< std::endl;
+    // somethingInverse.vmult(reducedQEigenfunctions[i], temp6); //6
+    // std::cout << __LINE__<< std::endl;
+    // SS.Tvmult(temp7, reducedQEigenfunctions[i]);      //7
+    // std::cout << __LINE__<< std::endl;
+    // Svd_U_for_Neu.vmult(QeigenStates[i], temp7);      //8
       
       
-      Q_From_U_eigen
-	.vmult(QeigenStates[i],reducedUEigenfunctions[i]);
-      QeigenStates[i] /= sqrt( MassQ.matrix_scalar_product(QeigenStates[i], QeigenStates[i] ) );
-      std::cout << __LINE__<< std::endl;
+    Q_From_U_eigen
+      .vmult(QeigenStates[i],reducedUEigenfunctions[i]);
+    QeigenStates[i] /= sqrt( MassQ.matrix_scalar_product(QeigenStates[i], QeigenStates[i] ) );
+    std::cout << __LINE__<< std::endl;
     
   }      
+}
+
+template<int dim>
+void
+EllipticProblem<dim>::EigenSolve_UGLY(){
+  std::vector<dealii::Vector<heat::real > >
+    reducedUEigenfunctions(n_eigenvalues);
+  std::vector<dealii::Vector<heat::real > >
+    reducedQEigenfunctions(n_eigenvalues);
+  for(auto && i : reducedUEigenfunctions){
+    i.reinit(QQ.m() );    
+  }
+
+  for(auto && i : reducedQEigenfunctions){
+    i.reinit(SS.m() );    
+  }
+
+  
+  std::vector<std::complex<double> > eigenvalues(n_eigenvalues);
+  
+
+  const auto something_UGLY
+    = dealii::linear_operator(SS)
+    * dealii::transpose_operator( dealii::linear_operator(Svd_U_for_Neu) )
+    * dealii::linear_operator(MassQ)
+    * dealii::linear_operator(Svd_U_for_Neu)
+    * dealii::transpose_operator( dealii::linear_operator(SS) );  
+
+  const auto precon_UGLY
+    = dealii::linear_operator(SS)
+    * dealii::transpose_operator( dealii::linear_operator(Svd_U_for_Neu) )
+    * dealii::linear_operator(InverseMassQ)
+    * dealii::linear_operator(Svd_U_for_Neu)
+    * dealii::transpose_operator( dealii::linear_operator(SS) );
+  
+  dealii::SolverControl innerControl_UGLY(1000, 1e-14);
+  dealii::SolverCG<> innerSolver_UGLY(innerControl_UGLY);
+
+  const auto somethingInverse_UGLY
+    = dealii::inverse_operator(something_UGLY,
+			       innerSolver_UGLY,
+			       precon_UGLY);
+
+  const auto product_UGLY
+    = dealii::linear_operator(SS)
+    * dealii::transpose_operator(dealii::linear_operator(Svd_U_for_Neu))
+    * dealii::linear_operator(TotalQFromU)
+    * dealii::linear_operator(Svd_U_for_Dir)
+    * dealii::transpose_operator(dealii::linear_operator(QQ) );  
+
+  const auto schurComp_UGLY
+    = dealii::transpose_operator(product_UGLY)  * somethingInverse_UGLY * product_UGLY;
+
+  const auto
+    smallProduct_UGLY
+    = dealii::linear_operator(QQ)
+    * dealii::transpose_operator(dealii::linear_operator(Svd_U_for_Dir))
+    * dealii::linear_operator(MassU)
+    * dealii::linear_operator(Svd_U_for_Dir)
+    * dealii::transpose_operator( dealii::linear_operator(QQ) );
+  
+  auto Identity1_UGLY = dealii::PreconditionIdentity();    
+  dealii::SolverControl outerControl_2_UGLY(1000,1e-8);
+
+  dealii::SolverCG<dealii::Vector<heat::real> > outerSolver_UGLY(outerControl_2_UGLY);
+
+  const auto schurCompInverse_UGLY
+    = dealii::inverse_operator(schurComp_UGLY,
+  			       outerSolver_UGLY,
+  			       Identity1_UGLY);
+
+  const unsigned int num_arnoldi_vectors_UGLY = 2 * n_eigenvalues + 2;
+  dealii::ArpackSolver::AdditionalData additional_data_UGLY
+    (num_arnoldi_vectors_UGLY,
+     dealii::ArpackSolver::WhichEigenvalues::largest_magnitude);
+
+  dealii::SolverControl Eigen_control_UGLY(dof_handler.n_dofs(), 1e-4);
+
+  dealii::ArpackSolver eigenSolver_UGLY(Eigen_control_UGLY, additional_data_UGLY);
+
+  //assert(false);
+  std::cout << "About to solve" << std::endl;
+  eigenSolver_UGLY.symmetric_solve
+    (schurComp_UGLY,
+     smallProduct_UGLY,
+     schurCompInverse_UGLY,
+     eigenvalues,
+     reducedUEigenfunctions,
+     eigenvalues.size() );
+  std::cout << "After solve" << std::endl;
+  
+  const auto Q_From_U_eigen_first_part =
+    (dealii::linear_operator(Svd_U_for_Neu)
+     * dealii::transpose_operator(dealii::linear_operator(SS) ) );  
+
+  const auto Q_From_U_eigen_last_part
+    = dealii::linear_operator(SS)
+    * dealii::transpose_operator(dealii::linear_operator(Svd_U_for_Neu))
+    * dealii::linear_operator(TotalQFromU)
+    * dealii::linear_operator(Svd_U_for_Dir)
+    * dealii::transpose_operator(dealii::linear_operator(QQ));
+    
+  const auto Q_From_U_eigen
+    = Q_From_U_eigen_first_part
+    * somethingInverse_UGLY
+    * Q_From_U_eigen_last_part;
+
+  // const auto Q_From_U_eigen =
+
+  // std::cout << "Construction" << std::endl;
+  // const auto Q_From_U_eigen_try_number_2 = 
+  //   (dealii::linear_operator(Svd_U_for_Neu)
+  //    * dealii::transpose_operator(linear_operator(SS) ) )
+  //   * (somethingInverse_UGLY 
+  //      * (dealii::linear_operator(SS)
+  // 	  * dealii::transpose_operator(dealii::linear_operator(Svd_U_for_Neu) )
+  // 	  * dealii::linear_operator(TotalQFromU)
+  // 	  * dealii::linear_operator(Svd_U_for_Dir)
+  // 	  * dealii::transpose_operator(dealii::linear_operator(QQ) )
+  // 	  )
+  //      );
+      
+  // std::cout << "End Construction" << std::endl;
+    
+  std::cout << "About to populate for Q" << std::endl;
+  for(unsigned int i = 0; i < eigenvalues.size(); ++i){
+    
+    dealii::Vector<heat::real> temp1( QQ.n() );
+    
+    QQ.Tvmult(temp1, reducedUEigenfunctions[i]);
+    Svd_U_for_Dir.vmult(UeigenStates[i], temp1);
+
+    UeigenStates[i] /= sqrt(MassU.matrix_scalar_product(UeigenStates[i], UeigenStates[i]) );
+          
+    Q_From_U_eigen
+      .vmult(QeigenStates[i],reducedUEigenfunctions[i]);
+    QeigenStates[i] /= sqrt( MassQ.matrix_scalar_product(QeigenStates[i], QeigenStates[i] ) );
+  }
+}
+
+template<int dim>
+void
+EllipticProblem<dim>::EstimateEllipticError(){
+
+  std::vector<unsigned int>  old_user_indices;
+  triangulation.save_user_indices(old_user_indices);
+
+  EstimatedError.block(0).reinit(triangulation.n_active_cells() );
+  {
+    unsigned int i = 0;
+      for(auto cell = triangulation.begin_active(); cell != triangulation.end(); ++cell, ++i){
+	cell->set_user_index(i);
+      }
+  }
+  
+  dealii::MeshWorker::IntegrationInfoBox<dim> info_boxSys;
+  const unsigned int n_gauss_points = dof_handler.get_fe().degree+1;
+  
+  info_boxSys.initialize_gauss_quadrature(n_gauss_points,					  
+					  n_gauss_points,
+					  n_gauss_points);
+
+  dealii::AnyData SystemState;
+
+  state.block(0) = Ustate;
+  state.block(1) = Qstate;
+
+  SystemState.add(&state,"state");
+
+  info_boxSys.cell_selector.add(    "state", false, true,  false);
+  info_boxSys.boundary_selector.add("state", false, false, false);
+  info_boxSys.face_selector.add(    "state", true , false, false);
+
+  
+  dealii::UpdateFlags update_flags
+    = dealii::update_values
+    | dealii::update_quadrature_points;
+
+  info_boxSys.initialize_update_flags(true);
+  info_boxSys.add_update_flags_all(update_flags);
+  info_boxSys.add_update_flags_face(dealii::update_normal_vectors);
+  info_boxSys.add_update_flags_boundary(dealii::update_normal_vectors);
+
+
+  dealii::MeshWorker::DoFInfo<dim> dof_infoSys(dof_handler.block_info() );
+
+  info_boxSys.initialize(feSystem, mapping,SystemState, state, &dof_handler.block_info() );
+  //info_boxSys.initialize(feSystem, mapping,SystemState);
+  
+  dealii
+    ::MeshWorker
+    ::Assembler
+    ::CellsAndFaces<heat::real>
+    assemblerError;
+
+  dealii::AnyData OutData;
+  OutData.add(&EstimatedError, "cells");
+  
+  assemblerError.initialize( OutData, false);
+
+  //dealii::AnyData 
+  
+  //assemblerError.initialize( 
+
+  heat::LDGErrorIntegrator::LDGErrorIntegrator<dim>
+    LDGErrorIntegrator(referenceDirection);
+
+  dealii::MeshWorker::LoopControl loopControl;
+  loopControl.cells_first = false;
+  loopControl.own_faces = dealii::MeshWorker::LoopControl::both;
+  
+  dealii::MeshWorker::integration_loop<dim,dim>
+    (dof_handler.begin_active(),
+     dof_handler.end(),
+     dof_infoSys,
+     info_boxSys,
+     LDGErrorIntegrator,
+     assemblerError,
+     loopControl);
+
+  triangulation.load_user_indices(old_user_indices);
+  
 }
 
 template<int dim>
@@ -3439,7 +3943,6 @@ EllipticProblem<dim>::EigenSolve(){
      InverseMassQ,
      TotalUFromQ
      );
-    
   
   const Q_UStar_massU_U_QStar smallProduct(QQ,Svd_U_for_Dir, MassU);
   
@@ -3460,13 +3963,14 @@ EllipticProblem<dim>::EigenSolve(){
   dealii::SolverControl solver_control(dof_handler.n_dofs(), 1e-14);
 
   dealii::ArpackSolver eigenSolver(solver_control, additional_data);
-  eigenSolver.solve(
-		    bigProduct,
-		    smallProduct,
-		    bigProductInverse,
-		    eigenvalues,
-		    reducedUEigenfunctions,
-		    eigenvalues.size() );
+
+  eigenSolver.solve
+    (bigProduct,
+     smallProduct,
+     bigProductInverse,
+     eigenvalues,
+     reducedUEigenfunctions,
+     eigenvalues.size() );  
 
   for(unsigned int i = 0; i < eigenvalues.size(); ++i){
     dealii::Vector<heat::real> temp1( QQ.n() );
@@ -3535,7 +4039,41 @@ void EllipticProblem<dim>::output_results_eigensystem ()
 
 template<int dim>
 void
-EllipticProblem<dim>::ElliptSolveNEW(){
+EllipticProblem<dim>::ElliptSolve(){
+  //dealii::Vector<heat::real> mu(Qstate.size() );
+  //dealii::Vector<heat::real> lambda(Ustate.size() );
+
+  std::cout << "Before Solve" << std::endl;
+
+  {
+    auto residual = Q_MinusRHS;
+    MassQ.vmult_add(residual, Qstate);    
+    BoundaryMassQ.vmult_add(residual, mu_UGLY);   
+    TotalQFromU.vmult_add(residual, Ustate);
+    PRINT(residual.l2_norm());
+  }
+
+  {
+    auto residual = U_MinusRHS;    
+    TotalUFromQ.vmult_add(residual, Qstate);    
+    BoundaryMassU.vmult_add(residual, lambda_UGLY);
+    PRINT(residual.l2_norm());
+  }
+
+  {
+    auto residual = UdirConstraint_RHS;
+    residual *= -1.0;
+    BoundaryMassU.vmult_add(residual, Ustate);
+    PRINT(residual.l2_norm());
+  }
+
+  {
+    auto residual = QneuConstraint_RHS;
+    residual *= -1.0;
+    BoundaryMassQ.vmult_add(residual, Qstate);
+    PRINT(residual.l2_norm());
+  } 
+  
 
   const auto
     PPSigmaPPStar =
@@ -3543,49 +4081,43 @@ EllipticProblem<dim>::ElliptSolveNEW(){
     * dealii::linear_operator(Svd_Sigma_for_Dir)
     * dealii::transpose_operator( dealii::linear_operator(PP) );
 
-    auto Id2 = dealii::PreconditionIdentity();
-    dealii::SolverControl firstSolverControl(10000,1e-14);
-    dealii::SolverCG<decltype(UperpNEW)> firstSolver(firstSolverControl);
-
-    const auto PPSigmaPPStarInverse
-      = dealii::inverse_operator(PPSigmaPPStar,
-				 firstSolver,
-				 Id2);
-
-    const auto RRSigmaRRStar
-      = dealii::linear_operator(RR)
-      * dealii::linear_operator(Svd_Sigma_for_Neu)
-      * dealii::transpose_operator( dealii::linear_operator( RR) );
-    
-    dealii::SolverControl secondSolverControl(10000,1e-14);
-    dealii::SolverCG<> secondSolver(secondSolverControl);
-
-    const auto RRSigmaRRStarInverse
-      = dealii::inverse_operator(RRSigmaRRStar, secondSolver, Id2);
+  auto Id2 = dealii::PreconditionIdentity();
+  dealii::SolverControl firstSolverControl(10000,1e-14);
+  dealii::SolverCG<decltype(UperpNEW)> firstSolver(firstSolverControl);
   
+  const auto PPSigmaPPStarInverse
+    = dealii::inverse_operator(PPSigmaPPStar,
+			       firstSolver,
+			       Id2);
 
-  
+  const auto RRSigmaRRStar
+    = dealii::linear_operator(RR)
+    * dealii::linear_operator(Svd_Sigma_for_Neu)
+    * dealii::transpose_operator( dealii::linear_operator( RR) );
+
+  dealii::SolverControl secondSolverControl(10000,1e-14);
+  dealii::SolverCG<> secondSolver(secondSolverControl);
+
+  const auto RRSigmaRRStarInverse
+    = dealii::inverse_operator(RRSigmaRRStar, secondSolver, Id2);
+
   // find Uperp (if it exists)
-    if(rankBoundaryMassU > 0){
-      UperpNEW.reinit(rankBoundaryMassU); //TODO:  This should happen earlier;
-      dealii::Vector<heat::real> rhs(PP.m() );      
-      // build rhs
-      const auto
-	PP_times_UStar =
-	dealii::linear_operator(PP)
-	* dealii::transpose_operator
-	( dealii::linear_operator(Svd_U_for_Dir)
-	  );
-      PP_times_UStar.vmult(rhs, UdirConstraint_RHS);
+  if(rankBoundaryMassU > 0){
+    UperpNEW.reinit(rankBoundaryMassU); //TODO:  This should happen earlier;
+    dealii::Vector<heat::real> rhs(PP.m() );      
+    // build rhs
+    const auto
+      PP_times_UStar =
+      dealii::linear_operator(PP)
+      * dealii::transpose_operator
+      ( dealii::linear_operator(Svd_U_for_Dir)
+	);
+    PP_times_UStar.vmult(rhs, UdirConstraint_RHS);
+    PPSigmaPPStarInverse.vmult(UperpNEW,rhs);
+  }
 
-      PPSigmaPPStarInverse.vmult(UperpNEW,rhs);
-    }
+  if(rankBoundaryMassQ > 0){
 
-
-    
-
-    if(rankBoundaryMassQ > 0){
-      
     // find Qperp (if it exists)
     QperpNEW.reinit(rankBoundaryMassQ);  
     dealii::Vector<heat::real> rhs(RR.m() );    
@@ -3599,61 +4131,21 @@ EllipticProblem<dim>::ElliptSolveNEW(){
       
     
     RRSigmaRRStarInverse.vmult(QperpNEW, rhs);    
-    }
+  }
   
   // double struck F
   dealii::Vector<heat::real> dsF(nullityBoundaryMassQ);
-  {
-    dealii::Vector<heat::real> temp1(TotalQFromU.m());
-    {
-      dealii::Vector<heat::real>
-	temp1p1(PP.n()),
-	temp1p2(Svd_U_for_Dir.m());
-
-      PP.Tvmult(temp1p1, UperpNEW);
-      Svd_U_for_Dir.vmult(temp1p2, temp1p1);
-      TotalQFromU.vmult(temp1, temp1p2);
-    }
-
-    dealii::Vector<heat::real> temp2(MassQ.m() );
-    {
-      dealii::Vector<heat::real>
-	temp2p1(RR.n()),
-	temp2p2(Svd_U_for_Neu.m() );      
-      RR.Tvmult(temp2p1, QperpNEW);
-      Svd_U_for_Neu.vmult(temp2p2, temp2p1);
-      MassQ.vmult(temp2, temp2p2);
-    }
-
-    dealii::Vector<heat::real> temp3(Q_MinusRHS.size() );
-
-    temp3 = 0;
-    temp3 += Q_MinusRHS;
-    temp3 += temp2;
-    temp3 += temp1;
     
-    dealii::Vector<heat::real>
-      temp4(Svd_U_for_Neu.n() );
-    Svd_U_for_Neu.Tvmult( temp4, temp3);
-    
-    SS.vmult(dsF, temp4);
-  }
-  
-  // std::cout << "dsF = \n"
-  // 	    << dsF << std::endl;
-
-  // double struck F_UGLY
-  dealii::Vector<heat::real> dsF_UGLY(nullityBoundaryMassQ);
   {
     (dealii::linear_operator(SS)
-     * transpose_operator(dealii::linear_operator(Svd_U_for_Neu) ) ).vmult(dsF_UGLY,Q_MinusRHS);
+     * transpose_operator(dealii::linear_operator(Svd_U_for_Neu) ) ).vmult(dsF,Q_MinusRHS);
 
     if(rankBoundaryMassU > 0){
       (dealii::linear_operator(SS)
        * dealii::transpose_operator(dealii::linear_operator(Svd_U_for_Neu))
        * dealii::linear_operator(TotalQFromU)
        * dealii::linear_operator(Svd_U_for_Dir)
-       * dealii::transpose_operator(dealii::linear_operator(PP) ) ).vmult_add(dsF_UGLY, UperpNEW);
+       * dealii::transpose_operator(dealii::linear_operator(PP) ) ).vmult_add(dsF, UperpNEW);
     }
 
     if(rankBoundaryMassQ > 0){
@@ -3661,112 +4153,30 @@ EllipticProblem<dim>::ElliptSolveNEW(){
        * dealii::transpose_operator(dealii::linear_operator(Svd_U_for_Neu))
        * dealii::linear_operator(MassQ)
        * dealii::linear_operator(Svd_U_for_Neu)
-       * dealii::transpose_operator(dealii::linear_operator(RR) ) ).vmult_add(dsF_UGLY, QperpNEW);
-    
-    }
+       * dealii::transpose_operator(dealii::linear_operator(RR) ) ).vmult_add(dsF, QperpNEW);
 
+    }
   }
 
-  
-  
-      
+
+
   // Double struck G
   dealii::Vector<heat::real> dsG(nullityBoundaryMassU);
   {
-    dealii::Vector<heat::real> temp1(TotalQFromU.n() );
-    {
-      dealii::Vector<heat::real>
-	temp1p1(RR.n() ),
-	temp1p2(Svd_U_for_Neu.m() );
-
-      RR.Tvmult(temp1p1, QperpNEW);
-      Svd_U_for_Neu.vmult( temp1p2, temp1p1);
-      TotalQFromU.Tvmult(temp1, temp1p2);            
-    }
-    temp1 *= -1.0;
-
-    dealii::Vector<heat::real>
-      temp2(U_MinusRHS.size() );
-    temp2 = 0;
-    temp2 += U_MinusRHS;
-    temp2 += temp1;
-
-    dealii::Vector<heat::real>
-      temp3(Svd_U_for_Dir.n() );
-
-    Svd_U_for_Dir.Tvmult(temp3, temp2);
-    QQ.vmult(dsG, temp3);
-  }
- std::cout << __LINE__ << std::endl;
-
-
- // Double struck G_UGLY
-  dealii::Vector<heat::real> dsG_UGLY(nullityBoundaryMassU);
-  {
     (dealii::linear_operator(QQ)
-     * dealii::transpose_operator(dealii::linear_operator(Svd_U_for_Dir) ) ).vmult(dsG_UGLY, U_MinusRHS);
+     * dealii::transpose_operator(dealii::linear_operator(Svd_U_for_Dir) ) ).vmult(dsG, U_MinusRHS);
 
-     
     if(rankBoundaryMassQ > 0){
-      auto temp = dsG_UGLY;
-      temp = 0;
-    
-    (dealii::linear_operator(QQ)
-     * dealii::transpose_operator(dealii::linear_operator(Svd_U_for_Dir))
-     * dealii::transpose_operator(dealii::linear_operator(TotalQFromU))
-     * dealii::linear_operator(Svd_U_for_Neu)
-     * dealii::transpose_operator( dealii::linear_operator( RR ) ) ).vmult(temp, QperpNEW);
-    dsG_UGLY -= temp;
+      auto temp = dsG;      
+
+      (dealii::linear_operator(QQ)
+       * dealii::transpose_operator(dealii::linear_operator(Svd_U_for_Dir))
+       * dealii::transpose_operator(dealii::linear_operator(TotalQFromU))
+       * dealii::linear_operator(Svd_U_for_Neu)
+       * dealii::transpose_operator( dealii::linear_operator( RR ) ) ).vmult(temp, QperpNEW);
+      dsG -= temp;
     }
-
   }
-
-  // find Upar
-  
-  UparNEW.reinit(nullityBoundaryMassU);
-  SS_UStar_massQ_U_SSStar something(SS, Svd_U_for_Neu, MassQ);
-  SS_UStar_massQ_U_SSStar precon(SS,Svd_U_for_Neu, InverseMassQ);
-
-  dealii::SolverControl innerControl(1000,1e-14);
-  dealii::IterativeInverse<dealii::Vector<heat::real> > somethingInverse;
-  somethingInverse.initialize(something, precon );
-  somethingInverse.solver.select("cg");
-  somethingInverse.solver.set_control(innerControl);
-  
-  SS_UStar_TotalQFromU_U_QQStar product(SS,
-					Svd_U_for_Neu,
-					TotalQFromU,
-					Svd_U_for_Dir,
-					QQ);
-  
-  SchurComplementNEW<decltype(somethingInverse), decltype( product), decltype( product)>
-    schurComp(somethingInverse, product, product);
-
-std::cout << __LINE__ << std::endl;
-  {
-    dealii::Vector<heat::real> temp1(something.m() );
-    dealii::Vector<heat::real> temp2(product.n() );
-    somethingInverse.vmult(temp1, dsF);
-    product.Tvmult(temp2, temp1);
-    
-    dsG += temp2;
-  }
-std::cout << __LINE__ << std::endl;
-  auto Id4 = dealii::PreconditionIdentity();  
-  dealii::SolverControl outerControl(100000, 1e-12);
-  dealii::IterativeInverse<dealii::Vector<heat::real> > bigInverse;
-  bigInverse.initialize(schurComp, Id4);
-  std::cout << __LINE__ << std::endl;
-
-  bigInverse.solver.select("cg");  
-  bigInverse.solver.set_control(outerControl);
-  
-  UparNEW = 0;
-  bigInverse.vmult(UparNEW, dsG);
-
-  UparNEW *= -1.0;
-
-std::cout << __LINE__ << std::endl;
 
   const auto AABlock =
     dealii::linear_operator( SS )
@@ -3774,14 +4184,14 @@ std::cout << __LINE__ << std::endl;
     * dealii::linear_operator(MassQ)
     * dealii::linear_operator(Svd_U_for_Neu)
     * dealii::transpose_operator( dealii::linear_operator(SS) );
-std::cout << __LINE__ << std::endl;
+
   const auto AABlockApproxInverse =
     dealii::linear_operator( SS )
     * dealii::transpose_operator( dealii::linear_operator(Svd_U_for_Neu) )
     * dealii::linear_operator(InverseMassQ)
     * dealii::linear_operator(Svd_U_for_Neu)
     * dealii::transpose_operator( dealii::linear_operator(SS) );
-std::cout << __LINE__ << std::endl;
+
   const auto BBBlock =
     dealii::linear_operator( SS )
     * dealii::transpose_operator( dealii::linear_operator(Svd_U_for_Neu) )
@@ -3789,7 +4199,7 @@ std::cout << __LINE__ << std::endl;
     * dealii::linear_operator(Svd_U_for_Dir)
     * dealii::transpose_operator( dealii::linear_operator(QQ) );
 
-std::cout << __LINE__ << std::endl;
+
   
   dealii::SolverControl InnerControlForAABlock(1000, 1e-14);
   dealii::SolverCG<> innerSolver(InnerControlForAABlock);
@@ -3797,252 +4207,137 @@ std::cout << __LINE__ << std::endl;
   const auto AABlockInverse
     = dealii::inverse_operator(AABlock, innerSolver, AABlockApproxInverse);
 
-std::cout << __LINE__ << std::endl;
-  //UparUGLY
-  {
-      dealii::Vector<heat::real> UparNEWUGLY(nullityBoundaryMassU);
-      dealii::Vector<heat::real> dsH_UGLY(nullityBoundaryMassU);
+  
+  //Upar
+  dealii::Vector<heat::real> UparNEW(nullityBoundaryMassU);
 
+ 
+  //Initial Guess for UparNEW; 
+    (dealii::linear_operator(QQ) * 
+     dealii::transpose_operator(dealii::linear_operator(Svd_U_for_Dir))).vmult(UparNEW ,Ustate);
+
+  
+  {
+    auto Id2 = dealii::PreconditionIdentity();
+    dealii::Vector<heat::real> dsH(nullityBoundaryMassU);
 
     const auto Schur
       = dealii::transpose_operator(BBBlock) * AABlockInverse * BBBlock;
+    
+    const auto Schur_approx = dealii::transpose_operator(BBBlock) * AABlockApproxInverse * BBBlock;
+    dealii::SolverControl InnerControlForPrecon(1000, 1e-14);
+    dealii::SolverCG<> PreconSolver(InnerControlForPrecon);
 
-    auto Id2 = dealii::PreconditionIdentity();
+    const auto Schur_precon = dealii::inverse_operator(Schur_approx, PreconSolver, Id2);    
+
     dealii::SolverControl outerControl(1000, 1e-10);
     dealii::SolverCG<> OuterSolver(outerControl);    
     const auto SchurInverse
-      = dealii::inverse_operator(Schur, OuterSolver, Id2);
+      = dealii::inverse_operator(Schur, OuterSolver,
+				 Id2);
+    //Schur_precon);
 
-    (dealii::transpose_operator(BBBlock) * AABlockInverse).vmult(dsH_UGLY, dsF_UGLY);
+    (dealii::transpose_operator(BBBlock) * AABlockInverse).vmult(dsH, dsF);
 
-    dsH_UGLY += dsG_UGLY;
+    dsH += dsG;    
+    dsH *= -1.0;
+
+    dealii::deallog.push("Solve UparNEW");
+    SchurInverse.vmult(UparNEW, dsH);
+    dealii::deallog.pop();
+
+
+    dsH *= -1.0;
+    // We just do this to undo the previous multiplication by minus 1 so the code matches the notes.
     
-    dsH_UGLY *= -1.0;
-
-    std::cout << "HERE" << __LINE__ << std::endl;
-    SchurInverse.vmult(UparNEWUGLY, dsH_UGLY);
-    dsH_UGLY *= -1.0;
-    // We just do to undo the previous multiplication by minus 1 so the code matches the notes.
     
   }
-std::cout << __LINE__ << std::endl;
-  // find Qpar
+
+  //Qpar  
+  dealii::Vector<heat::real> QparNEW(nullityBoundaryMassQ);
+
+  // Initial Guess for QparNEW
+  {
+    (dealii::linear_operator(SS) * 
+     dealii::transpose_operator(dealii::linear_operator(Svd_U_for_Neu))).vmult(QparNEW ,Qstate);
+  }
   dealii::Vector<heat::real> dsI(dsF.size() );
   {
-    dealii::Vector<heat::real> temp1(QQ.n() );  
-    dealii::Vector<heat::real> temp2(Svd_U_for_Dir.m() );  
-    dealii::Vector<heat::real> temp3(TotalQFromU.m() );  
-    dealii::Vector<heat::real> temp4(Svd_U_for_Neu.n() );
-  
-std::cout << __LINE__ << std::endl;
-    QQ.Tvmult(temp1, UparNEW);  
-    Svd_U_for_Dir.vmult(temp2, temp1);  
-    TotalQFromU.vmult(temp3, temp2);  
-    Svd_U_for_Neu.Tvmult(temp4,temp3);  
-    SS.vmult(dsI, temp4);  
-  }
-  std::cout << __LINE__ << std::endl;
-  dsI += dsF;
-  std::cout << __LINE__ << std::endl;
-  QparNEW.reinit(nullityBoundaryMassQ);
-  auto QparNEW_UGLY = QparNEW;
-  std::cout << __LINE__ << std::endl;
-  somethingInverse.vmult(QparNEW, dsI);  
-  QparNEW *= -1.0;
-std::cout << __LINE__ << std::endl;
-  //QparUGLY
-  dealii::Vector<heat::real> dsI_UGLY(dsF.size() );
-  {
-    dsI_UGLY = dsF_UGLY;
-    BBBlock.vmult_add(dsI_UGLY, UparNEW);
-
-    dsI_UGLY *= -1.0;
-    QparNEW_UGLY.reinit(nullityBoundaryMassQ);
-    AABlockInverse.vmult(QparNEW_UGLY, dsI_UGLY);
-    dsI_UGLY *= -1.0;
-    // We just do to undo the previous multiplication by minus 1 so the code matches the notes.
-std::cout << __LINE__ << std::endl;
-    QparNEW_UGLY -= QparNEW;
-    assert(QparNEW_UGLY.norm_sqr() < 1e-10);    
-  }
-std::cout << __LINE__ << std::endl;
-  //compute Q
-  Qstate = 0;
-  {
-    dealii::Vector<heat::real>
-      temp1(RR.n()),
-      temp2(Svd_U_for_Neu.m() ),
-      temp3(SS.n() ),
-      temp4(Svd_U_for_Neu.m() );
-    RR.Tvmult(temp1, QperpNEW);  
-    Svd_U_for_Neu.vmult(temp2,temp1);  
-
-    SS.Tvmult(temp3, QparNEW);  
-    Svd_U_for_Neu.vmult(temp4,temp3);
+    dsI = dsF;    
+    BBBlock.vmult_add(dsI, UparNEW);    
+    dsI *= -1.0;
     
-    Qstate += temp2;
-  
-    Qstate += temp4;  
-  }
-std::cout << __LINE__ << std::endl;
+    dealii::deallog.push("Solve QparNEW");
+    AABlockInverse.vmult(QparNEW, dsI);    
+    dealii::deallog.pop();
+    
+    dsI *= -1.0;
+    // We just do this to undo the previous multiplication by minus 1 so the code matches the notes.
 
-  auto QstateUGLY = Qstate;
+
+  }
+
+  //dealii::Vector<heat::real> Qstate(MassQ.m());
   {
     (dealii::linear_operator(Svd_U_for_Neu)
-     * dealii::transpose_operator( dealii::linear_operator( SS ) ) ).vmult(QstateUGLY, QparNEW);
+     * dealii::transpose_operator( dealii::linear_operator( SS ) ) ).vmult(Qstate, QparNEW);
     if(rankBoundaryMassQ > 0){
-    (dealii::linear_operator(Svd_U_for_Neu)
-     * dealii::transpose_operator( dealii::linear_operator( RR ) ) ).vmult_add(QstateUGLY, QperpNEW);
-    }
-    QstateUGLY -= Qstate;
-    assert(QstateUGLY.norm_sqr() < 1e-10 );
+      (dealii::linear_operator(Svd_U_for_Neu)
+       * dealii::transpose_operator( dealii::linear_operator( RR ) ) ).vmult_add(Qstate, QperpNEW);
+    }    
   }
-  std::cout << __LINE__ << std::endl;
-
-  //compute U
-  Ustate = 0;
-  {
-    dealii::Vector<heat::real>
-      temp1(PP.n() ),
-      temp2(Svd_U_for_Dir.m() ),
-      temp3(QQ.n() ),
-      temp4(Svd_U_for_Dir.m() );
-
-    PP.Tvmult(temp1,UperpNEW);
-
-    Svd_U_for_Dir.vmult(temp2, temp1);
-
-
-    QQ.Tvmult(temp3, UparNEW);
-
-    Svd_U_for_Dir.vmult(temp4, temp3);
-
-
-    Ustate += temp2;
-    Ustate += temp4;
-  }
-std::cout << __LINE__ << std::endl;
-  {
-    auto UstateUGLY = Ustate;
-    (dealii::linear_operator(Svd_U_for_Dir)
-     * dealii::transpose_operator( dealii::linear_operator( QQ ) ) ).vmult(UstateUGLY, UparNEW);
-    if(rankBoundaryMassU > 0){
-       (dealii::linear_operator(Svd_U_for_Dir)
-     * dealii::transpose_operator( dealii::linear_operator( PP ) ) ).vmult_add(UstateUGLY, UperpNEW);
-    }
-    UstateUGLY -= Ustate;
-    assert(UstateUGLY.norm_sqr() < 1e-10 );  
-  }
-  std::cout << __LINE__ << std::endl;
+  
 
   
-  //find muhat
-  dealii::Vector<heat::real> muhat(rankBoundaryMassQ);
-  if(rankBoundaryMassQ > 0){
-    dealii::Vector<heat::real>
-	temp1(TotalQFromU.m()),
-	temp2(TotalQFromU.m() ),      
-	temp3(Svd_U_for_Neu.n() ),
-	temp4(RR.m() );
-    
-      TotalQFromU.vmult(temp1, Ustate);    
-      temp1 += Q_MinusRHS;
-      MassQ.vmult(temp2, Qstate);
-      temp1 += temp2;    
-      Svd_U_for_Neu.Tvmult(temp3, temp1);
-      RR.vmult(temp4, temp3);
-      std::cout << __LINE__ << std::endl;
-    
-     
-      PSigmaPStar myPSigmaPStar(RR, Svd_Sigma_for_Neu);
-      auto Id3 = dealii::PreconditionIdentity();
-      dealii::SolverControl SolverControl(10000,1e-14);
-      dealii::SolverCG<> cg(SolverControl);
+  //dealii::Vector<heat::real> Ustate(MassU.m() );  
+  {
+    (dealii::linear_operator(Svd_U_for_Dir)
+     * dealii::transpose_operator( dealii::linear_operator( QQ ) ) ).vmult(Ustate, UparNEW);    
+  
+    if(rankBoundaryMassU > 0){  
+      (dealii::linear_operator(Svd_U_for_Dir)
+       * dealii::transpose_operator( dealii::linear_operator( PP ) ) ).vmult_add(Ustate, UperpNEW);
+    }
+  }  
 
-      cg.solve(myPSigmaPStar, muhat, temp4, Id3);
-      muhat *= -1.0;
-  }
-std::cout << __LINE__ << std::endl;
+  
   // Compute muhat_ugly
+
+  //dealii::Vector<heat::real> muhat(rankBoundaryMassQ);
+  dealii::Vector<heat::real> dsJ(rankBoundaryMassQ);
   if(rankBoundaryMassQ > 0){
-    auto muhat_UGLY = muhat;
-    auto dsJ_UGLY = muhat;
+
   
     (dealii::linear_operator(RR)
-     * dealii::transpose_operator( dealii::linear_operator(Svd_U_for_Neu) ) ).vmult(dsJ_UGLY, Q_MinusRHS);
-std::cout << __LINE__ << std::endl;
+     * dealii::transpose_operator( dealii::linear_operator(Svd_U_for_Neu) ) ).vmult(dsJ, Q_MinusRHS);
+    
     (dealii::linear_operator(RR)
      * dealii::transpose_operator( dealii::linear_operator(Svd_U_for_Neu) )
      * dealii::linear_operator(TotalQFromU)
-     ).vmult_add(dsJ_UGLY,Ustate);
-std::cout << __LINE__ << std::endl;
+     ).vmult_add(dsJ,Ustate);
+    
     (dealii::linear_operator(RR)
      * dealii::transpose_operator( dealii::linear_operator(Svd_U_for_Neu) )
      * dealii::linear_operator(MassQ)     
-     ).vmult_add(dsJ_UGLY, Qstate);
-std::cout << __LINE__ << std::endl;
-    RRSigmaRRStarInverse.vmult(muhat_UGLY, dsJ_UGLY);
-std::cout << __LINE__ << std::endl;
-    muhat_UGLY *= -1.0;
-std::cout << __LINE__ << std::endl;
-    muhat_UGLY -= muhat;
-    std::cout << __LINE__ << std::endl;
-    assert(muhat_UGLY.norm_sqr() < 1e-14);
-    std::cout << __LINE__ << std::endl;
+     ).vmult_add(dsJ, Qstate);
 
+    
+    RRSigmaRRStarInverse.vmult(muHat_UGLY, dsJ);    
+    muHat_UGLY *= -1.0;  
   }
 
-  // Compute mu
-  dealii::Vector<heat::real> mu(Qstate.size() );
-  if(rankBoundaryMassQ > 0){
-
-  
-    dealii::Vector<heat::real> temp1(Qstate.size() );
-    RR.Tvmult(temp1, muhat);
-    Svd_U_for_Neu.vmult(mu, temp1);
-  }
-  std::cout << __LINE__ << std::endl;
-  // compute mu_UGLY
-  if(rankBoundaryMassQ > 0){
-    auto mu_UGLY = mu;
+  // compute mu  
+  if(rankBoundaryMassQ > 0){    
     (dealii::linear_operator(Svd_U_for_Neu)
      * dealii::transpose_operator(dealii::linear_operator(RR))
-     ).vmult(mu_UGLY, muhat);
-
-    mu_UGLY -= mu;
-
+     ).vmult(mu_UGLY, muHat_UGLY);
   }
-  //  std::cout << "mu = \n" << mu << std::endl;
 
-  // Compute lambdahat
-  dealii::Vector<heat::real> lambdahat(rankBoundaryMassU);
+
+  // Compute lambaHat
+  //dealii::Vector<heat::real> lambdaHat(rankBoundaryMassU);
+  dealii::Vector<heat::real> dsK(rankBoundaryMassU);
   if(rankBoundaryMassU > 0){
-    
-
-    dealii::Vector<heat::real>
-      temp1(Ustate.size() ),
-      temp2(Svd_U_for_Dir.n() ),
-      temp3(PP.m() );
-    
-    TotalQFromU.Tvmult(temp1,Qstate);
-    temp1 *= -1.0;
-    temp1 += U_MinusRHS;
-    Svd_U_for_Dir.Tvmult(temp2, temp1);
-    PP.vmult(temp3, temp2);
-    PSigmaPStar myPSigmaPStar(PP, Svd_Sigma_for_Dir);
-    auto Id3 = dealii::PreconditionIdentity();
-    dealii::SolverControl SolverControl(10000,1e-14);
-    dealii::SolverCG<> cg(SolverControl);
-std::cout << __LINE__ << std::endl;
-    cg.solve(myPSigmaPStar, lambdahat, temp3, Id3);
-    lambdahat *= -1.0;    
-  }
-  //std::cout << "lambdahat = \n" << lambdahat << std::endl;
-
-  // Compute lambaHat_UGLY
-  if(rankBoundaryMassU > 0){
-    auto lambdaHat_UGLY = lambdahat;
-    auto dsK = lambdahat;
     
     (dealii::linear_operator(PP)
      * dealii::transpose_operator( dealii::linear_operator(Svd_U_for_Dir) )
@@ -4052,170 +4347,184 @@ std::cout << __LINE__ << std::endl;
     dsK *= -1.0;
     (dealii::linear_operator(PP)
      * dealii::transpose_operator( dealii::linear_operator(Svd_U_for_Dir) ) ).vmult_add(dsK, U_MinusRHS);
-
+    
     PPSigmaPPStarInverse.vmult(lambdaHat_UGLY, dsK);
 
-    lambdaHat_UGLY *= -1.0;     
-
-    lambdaHat_UGLY -= lambdahat;
-
-    assert(lambdaHat_UGLY.norm_sqr() < 1e-14);
-    
+    lambdaHat_UGLY *= -1.0;
   }
 
-  
-  //Compute lambda
-  dealii::Vector<heat::real> lambda(Ustate.size() );
-  if(rankBoundaryMassU > 0){
-    dealii::Vector<heat::real> temp1(Ustate.size() );
-    PP.Tvmult(temp1, lambdahat);
-    Svd_U_for_Dir.vmult(lambda, temp1);    
-  }
-  //std::cout << "lambda = \n" << lambda << std::endl;
+   
 
-  //Compute lambda_UGLY
-  auto lambda_UGLY = lambda;
-  if(rankBoundaryMassU > 0){
+  //Compute lambda  
+  if(rankBoundaryMassU > 0){ 
     (dealii::linear_operator(Svd_U_for_Dir) 
      * dealii::transpose_operator(dealii::linear_operator(PP) ) )
-      .vmult(lambda_UGLY, lambdahat);
+      .vmult(lambda_UGLY, lambdaHat_UGLY);
+  }
 
-  lambda_UGLY -= lambda;
-
-  assert(lambda_UGLY.norm_sqr() < 1e-14);
+  std::cout << "After Solve" << std::endl;
+  {
+    auto residual = Q_MinusRHS;
+    MassQ.vmult_add(residual, Qstate);
+    TotalQFromU.vmult_add(residual, Ustate);
+    BoundaryMassQ.vmult_add(residual, mu_UGLY);
+    PRINT(residual.l2_norm());
   }
   
-}
-
-template<int dim>
-void
-EllipticProblem<dim>::ElliptSolve(){
-  //grvy_timer_begin("find Uperp");
-
-  //Find Uperp;
-  dealii::Vector<heat::real> uPerp(rankBoundaryMassU);
-  UperpNEW.reinit(rankBoundaryMassU);
   {
-    //Ustate = 0;
-    PSigmaPStar PSigmaPStar_Instance(PP,Svd_Sigma_for_Dir);
-
-    dealii::Vector<heat::real>
-      temp1(Svd_Sigma_for_Dir.n()),
-      temp2(PP.m()),
-      temp3(PP.n());
-
-    Svd_U_for_Dir.Tvmult(temp1, UdirConstraint_RHS);
-    PP.vmult(temp2,temp1);
-
-    
-    auto Id5 = dealii::PreconditionIdentity();
-    dealii::SolverControl SolverControl(1000,1e-14);
-    dealii::SolverCG<> cg(SolverControl);
-    
-    cg.solve(PSigmaPStar_Instance, UperpNEW, temp2,
-	     Id5);
-
-    PP.Tvmult(temp3,UperpNEW);
-    Svd_U_for_Dir.vmult(Ustate, temp3);
-
+    auto residual = U_MinusRHS;    
+    TotalUFromQ.vmult_add(residual,Qstate);    
+    BoundaryMassU.vmult_add(residual, lambda_UGLY);
+    PRINT(residual.l2_norm());
   }
 
-  //Find Upar;
+  {
+    auto residual = UdirConstraint_RHS;
+    residual *= -1.0;
+    BoundaryMassU.vmult_add(residual, Ustate);
+    PRINT(residual.l2_norm());
+  }
+
+  {
+    auto residual = QneuConstraint_RHS;
+    residual *= -1.0;
+    BoundaryMassQ.vmult_add(residual, Qstate);
+    PRINT(residual.l2_norm());
+  }    
+}
+
+
+// This function has been commented out since may6 2015
+
+// template<int dim>
+// void
+// EllipticProblem<dim>::ElliptSolveOLD(){
+//   //grvy_timer_begin("find Uperp");
+
+//   //Find Uperp;
+//   dealii::Vector<heat::real> uPerp(rankBoundaryMassU);
+//   UperpNEW.reinit(rankBoundaryMassU);
+//   {
+//     //Ustate = 0;
+//     PSigmaPStar PSigmaPStar_Instance(PP,Svd_Sigma_for_Dir);
+
+//     dealii::Vector<heat::real>
+//       temp1(Svd_Sigma_for_Dir.n()),
+//       temp2(PP.m()),
+//       temp3(PP.n());
+
+//     Svd_U_for_Dir.Tvmult(temp1, UdirConstraint_RHS);
+//     PP.vmult(temp2,temp1);
+
+    
+//     auto Id5 = dealii::PreconditionIdentity();
+//     dealii::SolverControl SolverControl(1000,1e-14);
+//     dealii::SolverCG<> cg(SolverControl);
+    
+//     cg.solve(PSigmaPStar_Instance, UperpNEW, temp2,
+// 	     Id5);
+
+//     PP.Tvmult(temp3,UperpNEW);
+//     Svd_U_for_Dir.vmult(Ustate, temp3);
+
+//   }
+
+//   //Find Upar;
   
-  dealii::Vector<heat::real> uPar(nullityBoundaryMassU);
-  UparNEW.reinit(nullityBoundaryMassU);
-  {
-    dealii::Vector<heat::real>
-      temp1( rankBoundaryMassU + nullityBoundaryMassU ),
-      temp2( Svd_U_for_Dir.m() ),
-      temp3( TotalQFromU.m() ),
-      temp4( TotalQFromU.m() ),
-      temp5( TotalUFromQ.m() ),
-      temp6( Svd_U_for_Dir.n() ),
-      temp7( nullityBoundaryMassU ),
-      temp8( QQ.n() ),
-      temp9( Svd_U_for_Dir.m() );
+//   dealii::Vector<heat::real> uPar(nullityBoundaryMassU);
+//   UparNEW.reinit(nullityBoundaryMassU);
+//   {
+//     dealii::Vector<heat::real>
+//       temp1( rankBoundaryMassU + nullityBoundaryMassU ),
+//       temp2( Svd_U_for_Dir.m() ),
+//       temp3( TotalQFromU.m() ),
+//       temp4( TotalQFromU.m() ),
+//       temp5( TotalUFromQ.m() ),
+//       temp6( Svd_U_for_Dir.n() ),
+//       temp7( nullityBoundaryMassU ),
+//       temp8( QQ.n() ),
+//       temp9( Svd_U_for_Dir.m() );
 
-    //grvy_timer_begin("uPar RHS");
-    PP.Tvmult(temp1, UperpNEW);
-    Svd_U_for_Dir.vmult(temp2,temp1);
-    TotalQFromU.vmult(temp3, temp2);
-    temp3 += Q_MinusRHS;
-    InverseMassQ.vmult(temp4, temp3);
-    TotalQFromU.Tvmult(temp5,temp4);
-    temp5 += U_MinusRHS;
-    Svd_U_for_Dir.Tvmult(temp6, temp5);
-    QQ.vmult(temp7, temp6);
-    temp7 *= -1.0;
-    //grvy_timer_end("uPar RHS");
+//     //grvy_timer_begin("uPar RHS");
+//     PP.Tvmult(temp1, UperpNEW);
+//     Svd_U_for_Dir.vmult(temp2,temp1);
+//     TotalQFromU.vmult(temp3, temp2);
+//     temp3 += Q_MinusRHS;
+//     InverseMassQ.vmult(temp4, temp3);
+//     TotalQFromU.Tvmult(temp5,temp4);
+//     temp5 += U_MinusRHS;
+//     Svd_U_for_Dir.Tvmult(temp6, temp5);
+//     QQ.vmult(temp7, temp6);
+//     temp7 *= -1.0;
+//     //grvy_timer_end("uPar RHS");
 
 
-    Q_UStar_SStar_inverseMassQ_S_U_Q
-      bigProduct
-      (QQ,
-       Svd_U_for_Dir,
-       TotalQFromU,
-       InverseMassQ,
-       TotalUFromQ
-       );
-    auto Id6 = dealii::PreconditionIdentity();
-    dealii::SolverControl SolverControl(10000, 1e-16);
-    dealii::SolverCG<>    cg(SolverControl);
+//     Q_UStar_SStar_inverseMassQ_S_U_Q
+//       bigProduct
+//       (QQ,
+//        Svd_U_for_Dir,
+//        TotalQFromU,
+//        InverseMassQ,
+//        TotalUFromQ
+//        );
+//     auto Id6 = dealii::PreconditionIdentity();
+//     dealii::SolverControl SolverControl(10000, 1e-16);
+//     dealii::SolverCG<>    cg(SolverControl);
 
-    //grvy_timer_begin("Upar Solve");
+//     //grvy_timer_begin("Upar Solve");
     
-    cg.solve(bigProduct, UparNEW, temp7, Id6);
-    //grvy_timer_end("Upar Solve");
+//     cg.solve(bigProduct, UparNEW, temp7, Id6);
+//     //grvy_timer_end("Upar Solve");
 
-    QQ.Tvmult(temp8, UparNEW);
-    Svd_U_for_Dir.vmult(temp9,temp8);
-    Ustate += temp9;
+//     QQ.Tvmult(temp8, UparNEW);
+//     Svd_U_for_Dir.vmult(temp9,temp8);
+//     Ustate += temp9;
 
-  }
-  //grvy_timer_end("find Upar");
-  //Compute Q;
-  //grvy_timer_begin("compute Q");
-  {
-    dealii::Vector<heat::real>
-      temp1(TotalQFromU.m() );
-    temp1 = 0;
-    TotalQFromU.vmult(temp1,Ustate);
-    temp1 += Q_MinusRHS;
-    temp1 *= -1.0;
-    InverseMassQ.vmult(Qstate,temp1);
-  }
-  //grvy_timer_end("compute Q");
-
-
-  //Compute lambda (don't really care though);
-  //grvy_timer_begin("compute lambda");
-  {
-    dealii::Vector<heat::real>
-      temp1( TotalUFromQ.m() ),
-      temp2( Svd_U_for_Dir.m() ),
-      temp3( PP.m() ),
-      lambdaHat( PP.m() ),
-      temp4( PP.n() );
-
-    TotalUFromQ.vmult( temp1, Qstate );
-    temp1 += U_MinusRHS;
-    Svd_U_for_Dir.Tvmult( temp2, temp1 );
-    PP.vmult( temp3, temp2);
+//   }
+//   //grvy_timer_end("find Upar");
+//   //Compute Q;
+//   //grvy_timer_begin("compute Q");
+//   {
+//     dealii::Vector<heat::real>
+//       temp1(TotalQFromU.m() );
+//     temp1 = 0;
+//     TotalQFromU.vmult(temp1,Ustate);
+//     temp1 += Q_MinusRHS;
+//     temp1 *= -1.0;
+//     InverseMassQ.vmult(Qstate,temp1);
+//   }
+//   //grvy_timer_end("compute Q");
 
 
-    PSigmaPStar PSigmaPStar_Instance(PP,Svd_Sigma_for_Dir);
-    auto Id8 = dealii::PreconditionIdentity();
-    dealii::SolverControl SolverControl(10000,1e-16);
-    dealii::SolverCG<> cg(SolverControl);
+//   //Compute lambda (don't really care though);
+//   //grvy_timer_begin("compute lambda");
+//   {
+//     dealii::Vector<heat::real>
+//       temp1( TotalUFromQ.m() ),
+//       temp2( Svd_U_for_Dir.m() ),
+//       temp3( PP.m() ),
+//       lambdaHat( PP.m() ),
+//       temp4( PP.n() );
+
+//     TotalUFromQ.vmult( temp1, Qstate );
+//     temp1 += U_MinusRHS;
+//     Svd_U_for_Dir.Tvmult( temp2, temp1 );
+//     PP.vmult( temp3, temp2);
+
+
+//     PSigmaPStar PSigmaPStar_Instance(PP,Svd_Sigma_for_Dir);
+//     auto Id8 = dealii::PreconditionIdentity();
+//     dealii::SolverControl SolverControl(10000,1e-16);
+//     dealii::SolverCG<> cg(SolverControl);
     
-    cg.solve(PSigmaPStar_Instance, lambdaHat, temp3,
-	     Id8);
+//     cg.solve(PSigmaPStar_Instance, lambdaHat, temp3,
+// 	     Id8);
 
-    PP.Tvmult(temp4, lambdaHat);
-    Svd_U_for_Dir.vmult(lambdaU,temp4);
-  }
-  //grvy_timer_end("compute lambda");
-}
+//     PP.Tvmult(temp4, lambdaHat);
+//     Svd_U_for_Dir.vmult(lambdaU,temp4);
+//   }
+//   //grvy_timer_end("compute lambda");
+// }
 
 // template<int dim>
 // void
@@ -4255,7 +4564,7 @@ EllipticProblem<dim>::ElliptSolve(){
 //       preconditionInner;
 
 //     preconditionInner.initialize(approx_schurcomplement, identity);
-//     preconditionInner.solver.select("cg");
+
 //     preconditionInner.solver.set_control(innerControl);
 
 //     //TODO:  Magic Numbers
@@ -4303,520 +4612,520 @@ EllipticProblem<dim>::ElliptSolve(){
   //TODO:  Magic NumberU
   static dealii::SolverControl innerControl(5, 1e-14);
   MassUInverse.solver.set_control(innerControl);
-  dealii::Vector<heat::real> temp(Ustate.size() );
-  {
-  dealii::Vector<heat::real> schur_rhs(constraintDirU.size() );
-  try {
-  MassUInverse.vmult(temp, source1);
-  }
-  catch (...) {
-  std::cerr << "Failure in the first Usolve inversion" << std::endl;
-  std::abort();
-  }
+dealii::Vector<heat::real> temp(Ustate.size() );
+{
+dealii::Vector<heat::real> schur_rhs(constraintDirU.size() );
+try {
+MassUInverse.vmult(temp, source1);
+}
+ catch (...) {
+std::cerr << "Failure in the first Usolve inversion" << std::endl;
+std::abort();
+}
 
-  TraceUDir.vmult(schur_rhs, temp);
-  schur_rhs -= source2;
-  heat::SchurComplement
-  schurComplement(TraceUDir,MassUInverse);
-  heat::ApproximateSchurComplement
-  approx_schurcomplement(MassU,TraceUDir);
-  dealii::IterativeInverse<dealii::Vector<heat::real> >
-  preconditionInner;
+TraceUDir.vmult(schur_rhs, temp);
+schur_rhs -= source2;
+heat::SchurComplement
+schurComplement(TraceUDir,MassUInverse);
+heat::ApproximateSchurComplement
+approx_schurcomplement(MassU,TraceUDir);
+dealii::IterativeInverse<dealii::Vector<heat::real> >
+preconditionInner;
 
-  preconditionInner.initialize(approx_schurcomplement, identity);
-  preconditionInner.solver.select("cg");
-  preconditionInner.solver.set_control(innerControl);
+preconditionInner.initialize(approx_schurcomplement, identity);
+preconditionInner.solver.select("cg");
+preconditionInner.solver.set_control(innerControl);
 
-  //TODO:  Magic Numbers
-  dealii::SolverControl solver_control( 40 , 1e-8);
-  dealii::SolverCG<> cg(solver_control);
+//TODO:  Magic Numbers
+dealii::SolverControl solver_control( 40 , 1e-8);
+dealii::SolverCG<> cg(solver_control);
 
-  try {
-  cg.solve(schurComplement, lambdadest, schur_rhs, identity);
-  }
-  catch (...) {
-  std::cerr << "Failure in the USolve Schur Complement Solver" << std::endl;
-  std::abort();
-  }
-  }
+try {
+cg.solve(schurComplement, lambdadest, schur_rhs, identity);
+}
+ catch (...) {
+std::cerr << "Failure in the USolve Schur Complement Solver" << std::endl;
+std::abort();
+}
+}
 
-  TraceUDir.Tvmult(temp,lambdadest);
-  temp *= -1;
-  temp += U_RHS;
-  try {
-  MassUInverse.vmult(Udest, temp);
-  }
-  catch (...){
-  std::cerr << "Failure in the second Usolve inversion" << std::endl;
-  std::abort();
-  }
-  dealii::deallog.pop();
-  }
+TraceUDir.Tvmult(temp,lambdadest);
+temp *= -1;
+temp += U_RHS;
+try {
+MassUInverse.vmult(Udest, temp);
+}
+ catch (...){
+std::cerr << "Failure in the second Usolve inversion" << std::endl;
+std::abort();
+}
+dealii::deallog.pop();
+}
 
-  template<int dim>
-  void
-  EllipticProblem<dim>::PoissonSolve()
-  {
-  //TODO:  This is confusing, write up a TeX file explaining this.
-  dealii::PreconditionIdentity identity;
+template<int dim>
+void
+EllipticProblem<dim>::PoissonSolve()
+{
+//TODO:  This is confusing, write up a TeX file explaining this.
+dealii::PreconditionIdentity identity;
 
-  dealii::PreconditionJacobi<dealii::SparseMatrix<heat::real> > jacobiPre;
-  jacobiPre.initialize(MassElec);
-  dealii::IterativeInverse<dealii::Vector< heat::real> > MassElecInverse;
-  MassElecInverse.initialize(MassElec, MassElecInverseDirect);
-  MassElecInverse.solver.select("cg");
+dealii::PreconditionJacobi<dealii::SparseMatrix<heat::real> > jacobiPre;
+jacobiPre.initialize(MassElec);
+dealii::IterativeInverse<dealii::Vector< heat::real> > MassElecInverse;
+MassElecInverse.initialize(MassElec, MassElecInverseDirect);
+MassElecInverse.solver.select("cg");
 
-  //TODO:  Magic Numbers
-  static dealii::ReductionControl innerControl(2000,0, 1.0e-10);
-  MassElecInverse.solver.set_control(innerControl);
+//TODO:  Magic Numbers
+static dealii::ReductionControl innerControl(2000,0, 1.0e-10);
+MassElecInverse.solver.set_control(innerControl);
 
-  dealii::Vector<heat::real> temp1( ElecState.size() );
-  dealii::Vector<heat::real> temp2( PotState.size() );
-  dealii::Vector<heat::real> temp3( TraceElecNeu.m() );
+dealii::Vector<heat::real> temp1( ElecState.size() );
+dealii::Vector<heat::real> temp2( PotState.size() );
+dealii::Vector<heat::real> temp3( TraceElecNeu.m() );
 
-  std::vector<dealii::BlockVector<heat::real>::size_type> block_sizes;
-  block_sizes.push_back( PotState.size() )
-  block_sizes.push_back( TraceElecNeu.m() );
+std::vector<dealii::BlockVector<heat::real>::size_type> block_sizes;
+block_sizes.push_back( PotState.size() )
+block_sizes.push_back( TraceElecNeu.m() );
 
-  dealii::BlockVector<heat::real> schur_rhs(block_sizes);
-  schur_rhs.collect_sizes();
-  dealii::BlockVector<heat::real> answer = schur_rhs;
+dealii::BlockVector<heat::real> schur_rhs(block_sizes);
+schur_rhs.collect_sizes();
+dealii::BlockVector<heat::real> answer = schur_rhs;
 
-  //TODO:  Figure out a way to use the previous state as an initial guess.
-  {
-  //Build the RHS's
-  // First we will concentrate on the first block
+//TODO:  Figure out a way to use the previous state as an initial guess.
+{
+//Build the RHS's
+// First we will concentrate on the first block
 
-  try {
-  MassElecInverse.vmult(temp1, Elec_RHS);
-  } catch (...){
-  std::cerr << "Failure in the first PoissonSolver Inversion" << std::endl;
-  std::abort();
-  }
-  StiffPotFromElec.vmult(temp2,temp1);
+try {
+MassElecInverse.vmult(temp1, Elec_RHS);
+} catch (...){
+std::cerr << "Failure in the first PoissonSolver Inversion" << std::endl;
+std::abort();
+}
+StiffPotFromElec.vmult(temp2,temp1);
 
 
-  PotFromU.Tvmult(schur_rhs.block(0), Ustate);
-  //std::cout << "Turn off Coupling of poisson depending on U" << std::endl;
+PotFromU.Tvmult(schur_rhs.block(0), Ustate);
+//std::cout << "Turn off Coupling of poisson depending on U" << std::endl;
 
-  schur_rhs.block(0) = 0;
-  schur_rhs.block(0) -= temp2;
+schur_rhs.block(0) = 0;
+schur_rhs.block(0) -= temp2;
 
-  // Now the second block.
-  // We reuse temp1,
-  TraceElecNeu.vmult(temp3,temp1);
-  schur_rhs.block(1)  = PoissonNeuBC_RHS;
-  schur_rhs.block(1) -= temp3;
+// Now the second block.
+// We reuse temp1,
+TraceElecNeu.vmult(temp3,temp1);
+schur_rhs.block(1)  = PoissonNeuBC_RHS;
+schur_rhs.block(1) -= temp3;
 
-  //Now the schur_rhs is properly populated
-  heat::SchurComplementPoisson
-  schurComplement(TraceElecNeu,
+//Now the schur_rhs is properly populated
+heat::SchurComplementPoisson
+schurComplement(TraceElecNeu,
   StiffElecFromPot,
   MassElecInverse);
 
-  //schurComplement.vmult(answer, schur_rhs);
-  heat::ApproximateSchurComplementPoisson
-  approximateSchurComplementPoisson(TraceElecNeu,
+//schurComplement.vmult(answer, schur_rhs);
+heat::ApproximateSchurComplementPoisson
+approximateSchurComplementPoisson(TraceElecNeu,
   StiffElecFromPot,
   MassElec);
 
-  dealii::IterativeInverse<dealii::BlockVector<heat::real> > precondition;
-  precondition.initialize(approximateSchurComplementPoisson, identity);
-  precondition.solver.set_control(innerControl);
-  precondition.solver.select("cg");
+dealii::IterativeInverse<dealii::BlockVector<heat::real> > precondition;
+precondition.initialize(approximateSchurComplementPoisson, identity);
+precondition.solver.set_control(innerControl);
+precondition.solver.select("cg");
 
-  //TODO:  Magic Numbers;
-  dealii::SolverControl solver_control(2000,1.0e-7);
-  dealii::SolverCG<dealii::BlockVector<heat::real> > cg(solver_control);
+//TODO:  Magic Numbers;
+dealii::SolverControl solver_control(2000,1.0e-7);
+dealii::SolverCG<dealii::BlockVector<heat::real> > cg(solver_control);
 
-  try {
-  cg.solve(schurComplement, answer, schur_rhs, identity);
-  } catch (...) {
-  std::cerr << "Failure in the SchurComplementPoisson Solver" << std::endl;
-  std::abort();
-  }
+try {
+cg.solve(schurComplement, answer, schur_rhs, identity);
+} catch (...) {
+std::cerr << "Failure in the SchurComplementPoisson Solver" << std::endl;
+std::abort();
+}
 
-  {
-  dealii::BlockVector<heat::real> residual = schur_rhs;
-  schurComplement.vmult(residual, answer);
-  residual -= schur_rhs;
-  schurComplement.vmult(schur_rhs, residual);
-  }
-  }
+{
+dealii::BlockVector<heat::real> residual = schur_rhs;
+schurComplement.vmult(residual, answer);
+residual -= schur_rhs;
+schurComplement.vmult(schur_rhs, residual);
+}
+}
 
-  // dealii::Vector<heat::real>
-  //   temp4;
-  StiffElecFromPot.vmult(temp1, answer.block(0));
-  TraceElecNeu.Tvmult_add(temp1, answer.block(1));
-  temp1 += Elec_RHS;
-  PotState = answer.block(0);
-  try {
-  MassElecInverse.vmult(ElecState, temp1);
-  }
-  catch (...) {
-  std::cout << "Failure in PoissonSolve second inversion" << std::endl;
-  std::abort();
-  }
-  }
+// dealii::Vector<heat::real>
+//   temp4;
+StiffElecFromPot.vmult(temp1, answer.block(0));
+TraceElecNeu.Tvmult_add(temp1, answer.block(1));
+temp1 += Elec_RHS;
+PotState = answer.block(0);
+try {
+MassElecInverse.vmult(ElecState, temp1);
+}
+ catch (...) {
+std::cout << "Failure in PoissonSolve second inversion" << std::endl;
+std::abort();
+}
+}
 
-  template<int dim>
-  void
-  EllipticProblem<dim>::simulate()
-  {
-  //It seems like this should be in a different spot.
-  const double h
-  = dealii::GridTools::minimal_cell_diameter(triangulation);
+template<int dim>
+void
+EllipticProblem<dim>::simulate()
+{
+//It seems like this should be in a different spot.
+const double h
+= dealii::GridTools::minimal_cell_diameter(triangulation);
 
-  std::cout << "h = " << h << std::endl;
+std::cout << "h = " << h << std::endl;
 
-  //Todo: Magic Number 0.1
-  heat::real deltaT = .005 * h * h / ((2 * degree +1) *  (2 * degree + 1));
+//Todo: Magic Number 0.1
+heat::real deltaT = .005 * h * h / ((2 * degree +1) *  (2 * degree + 1));
 
-  //Todo: Magic Number numTimeStamps.
-  unsigned int numTimeStamps = 100;
+//Todo: Magic Number numTimeStamps.
+unsigned int numTimeStamps = 100;
 
-  double
-  timeInitial = 0.0,
+double
+timeInitial = 0.0,
   timeFinal   = 0.1;
 
-  std::vector<heat::real> timeStampVector(numTimeStamps);
-  unsigned int numTimeSteps = numTimeStamps - 1;
-  heat::real timePerTimeStep = (timeFinal - timeInitial) / numTimeSteps;
+std::vector<heat::real> timeStampVector(numTimeStamps);
+unsigned int numTimeSteps = numTimeStamps - 1;
+heat::real timePerTimeStep = (timeFinal - timeInitial) / numTimeSteps;
 
-  for(unsigned int i = 0; i < timeStampVector.size(); ++i){
-  timeStampVector[i] = timeInitial + i * timePerTimeStep;
-  }
+for(unsigned int i = 0; i < timeStampVector.size(); ++i){
+timeStampVector[i] = timeInitial + i * timePerTimeStep;
+}
 
-  //assert(timeStampVector[timeStampVector.size() - 1] == timeFinal);
+//assert(timeStampVector[timeStampVector.size() - 1] == timeFinal);
 
-  heat::real timeNow;
-  heat::real timeNext;
+heat::real timeNow;
+heat::real timeNext;
 
-  // We start at one and not zero because we printed the initial condition
-  // already.
-  for(unsigned int timeStampLabel = 1;
-  timeStampLabel < numTimeStamp;
-  ++timeStampLabel){
+// We start at one and not zero because we printed the initial condition
+// already.
+for(unsigned int timeStampLabel = 1;
+timeStampLabel < numTimeStamp;
+++timeStampLabel){
 
-  timeNow = timeStampVector[timeStampLabel - 1];
-  timeNext = timeStampVector[timeStampLabel];
+timeNow = timeStampVector[timeStampLabel - 1];
+timeNext = timeStampVector[timeStampLabel];
 
-  assert(timeNow < timeNext);
-  ComputeUnext(timeNow,timeNext,deltaT);
+assert(timeNow < timeNext);
+ComputeUnext(timeNow,timeNext,deltaT);
 
-  std::cout << "\rPrinting timeStampLabel " << timeStampLabel << " of "
-  << numTimeStamps - 1 << std::endl;
+std::cout << "\rPrinting timeStampLabel " << timeStampLabel << " of "
+<< numTimeStamps - 1 << std::endl;
 
-  ComputeDensityDot(timeNext);
-  //assert(timeStampLabel < 3);
-  PrintState  (timeStampLabel);
-  }
-  std::cout << "\nFinished" << std::endl;
-  }
+ComputeDensityDot(timeNext);
+//assert(timeStampLabel < 3);
+PrintState  (timeStampLabel);
+}
+std::cout << "\nFinished" << std::endl;
+}
 
-  template<int dim>
-  void
-  EllipticProblem<dim>::ComputeDensityDot(const heat::real time)
-  {
-  makeElec_RHS_From_DirichletBoundary(time);
-  makeConstraint_RHS_From_NeumanBoundary();
+template<int dim>
+void
+EllipticProblem<dim>::ComputeDensityDot(const heat::real time)
+{
+makeElec_RHS_From_DirichletBoundary(time);
+makeConstraint_RHS_From_NeumanBoundary();
 
-  PoissonSolve();
-  makeConstraintNeuQ(time);
-  makeQ_RHS_FromU();
-  QSolve_NEW(Qstate,lagrangeQ,Q_RHS, constraintNeuQ);
+PoissonSolve();
+makeConstraintNeuQ(time);
+makeQ_RHS_FromU();
+QSolve_NEW(Qstate,lagrangeQ,Q_RHS, constraintNeuQ);
 
-  //Compute Udot
-  makeConstraintDirU(time);
+//Compute Udot
+makeConstraintDirU(time);
 
-  makeU_RHS_FromQ();
-  //makeU_RHS_From_U();
-  //U_RHS += U_RHS_From_U;
-  //std::cout << "U_RHS.l2_norm() = " << U_RHS.l2_norm() << std::endl;
-  //USolve_NEW(UStateDot,lagrangeU,U_RHS,constraintDirU);
-  }
+makeU_RHS_FromQ();
+//makeU_RHS_From_U();
+//U_RHS += U_RHS_From_U;
+//std::cout << "U_RHS.l2_norm() = " << U_RHS.l2_norm() << std::endl;
+//USolve_NEW(UStateDot,lagrangeU,U_RHS,constraintDirU);
+}
 
-  template<int dim>
-  void
-  EllipticProblem<dim>::ComputeUnext
-  (heat::real timeNow,
+template<int dim>
+void
+EllipticProblem<dim>::ComputeUnext
+(heat::real timeNow,
   heat::real timeNext,
   heat::real deltaT)
-  {
-  heat::real deltaTRecommended = deltaT;
-  assert(timeNow < timeNext);
-  bool acceptFlag = false;
+{
+heat::real deltaTRecommended = deltaT;
+assert(timeNow < timeNext);
+bool acceptFlag = false;
 
-  //TODO Magic Number
-  assert(timeNext - timeNow > 0);
-  while (timeNext - timeNow > 0.0000000001){
-  //std::cout << "timeNow = " << timeNow << "\n";
-  if(timeNow + deltaTRecommended > timeNext){
-  deltaT = timeNext - timeNow;
-  }
-  else{
-  deltaT = deltaTRecommended;
-  }
+//TODO Magic Number
+assert(timeNext - timeNow > 0);
+while (timeNext - timeNow > 0.0000000001){
+//std::cout << "timeNow = " << timeNow << "\n";
+if(timeNow + deltaTRecommended > timeNext){
+deltaT = timeNext - timeNow;
+}
+ else{
+deltaT = deltaTRecommended;
+}
 
-  //std::cout << "timeNow = " << timeNow << std::endl;
+//std::cout << "timeNow = " << timeNow << std::endl;
 
-  //TODO: Magic number
-  //assert(fabs(timeNow + deltaT-timeNext) < 0.000001);
+//TODO: Magic number
+//assert(fabs(timeNow + deltaT-timeNext) < 0.000001);
 
-  ComputeDensityDot(timeNow);
-  ForwardEuler(timeNow,deltaT,acceptFlag,deltaTRecommended);
+ComputeDensityDot(timeNow);
+ForwardEuler(timeNow,deltaT,acceptFlag,deltaTRecommended);
 
-  // AdaptiveExplicitRungeKutta54
-  //       (timeNow,
-  // 	   deltaT,
-  // 	   acceptFlag,
-  // 	   deltaTRecommended);
+// AdaptiveExplicitRungeKutta54
+//       (timeNow,
+// 	   deltaT,
+// 	   acceptFlag,
+// 	   deltaTRecommended);
 
-  if(acceptFlag){
-  Ustate += DeltaUState;
-  timeNow += deltaT;
-  }
-  }
-  }
+if(acceptFlag){
+Ustate += DeltaUState;
+timeNow += deltaT;
+}
+}
+}
 
-  template<int dim>
-  void
-  EllipticProblem<dim>::ForwardEuler
-  (const heat::real timeNow,
+template<int dim>
+void
+EllipticProblem<dim>::ForwardEuler
+(const heat::real timeNow,
   const heat::real deltaT,
   bool & acceptFlag,
   heat::real & deltaTRecommended)
-  {
-  Assert( deltaT > 0, dealii::ExcMessage("Negative DeltaT") );
+{
+Assert( deltaT > 0, dealii::ExcMessage("Negative DeltaT") );
 
-  DeltaUState.sadd(0.0, deltaT, UStateDot);
-  acceptFlag = true;
-  deltaTRecommended = deltaT;
-  }
+DeltaUState.sadd(0.0, deltaT, UStateDot);
+acceptFlag = true;
+deltaTRecommended = deltaT;
+}
 
-  template<int dim>
-  void
-  EllipticProblem<dim>::AdaptiveExplicitRungeKutta54
-  (const heat::real timeNow,
+template<int dim>
+void
+EllipticProblem<dim>::AdaptiveExplicitRungeKutta54
+(const heat::real timeNow,
   const heat::real deltaT,
   bool & acceptFlag,
   heat::real & deltaTRecommended)
-  {
-  //  This isn't really ideal, but compute density dot does its work
-  //  using the vector that resides in Ustate;  And we need to feed different,
-  //  stage vectors in there.  So, for now, we just store the state in this temp
-  //  Storage vector.
+{
+//  This isn't really ideal, but compute density dot does its work
+//  using the vector that resides in Ustate;  And we need to feed different,
+//  stage vectors in there.  So, for now, we just store the state in this temp
+//  Storage vector.
 
-  dealii::Vector<heat::real> TempStorage = Ustate;
-  const unsigned int numDof = Ustate.size();
-  const int stages = 7;
+dealii::Vector<heat::real> TempStorage = Ustate;
+const unsigned int numDof = Ustate.size();
+const int stages = 7;
 
-  dealii::FullMatrix<heat::real> ButcherA(stages, stages);
-  dealii::FullMatrix<heat::real> ButcherB(2,stages);
-  dealii::Vector<heat::real> ButcherC(stages);
+dealii::FullMatrix<heat::real> ButcherA(stages, stages);
+dealii::FullMatrix<heat::real> ButcherB(2,stages);
+dealii::Vector<heat::real> ButcherC(stages);
 
-  ButcherA = 0;
-  ButcherB = 0;
-  ButcherC = 0;
+ButcherA = 0;
+ButcherB = 0;
+ButcherC = 0;
 
-  ButcherA(1,0) = 1.0 / 5.0;
+ButcherA(1,0) = 1.0 / 5.0;
 
-  ButcherA(2,0) = 3.0 / 40.0;
-  ButcherA(2,1) = 9.0 / 40.0;
+ButcherA(2,0) = 3.0 / 40.0;
+ButcherA(2,1) = 9.0 / 40.0;
 
-  ButcherA(3,0) =  44.0 / 45.0;
-  ButcherA(3,1) = -56.0 / 15.0;
-  ButcherA(3,2) =  32.0 / 9.0;
+ButcherA(3,0) =  44.0 / 45.0;
+ButcherA(3,1) = -56.0 / 15.0;
+ButcherA(3,2) =  32.0 / 9.0;
 
-  ButcherA(4,0) =  19372.0 / 6561.0;
-  ButcherA(4,1) = -25360.0 / 2187.0;
-  ButcherA(4,2) =  64448.0 / 6561.0;
-  ButcherA(4,3) = -212.0   / 729.0;
+ButcherA(4,0) =  19372.0 / 6561.0;
+ButcherA(4,1) = -25360.0 / 2187.0;
+ButcherA(4,2) =  64448.0 / 6561.0;
+ButcherA(4,3) = -212.0   / 729.0;
 
-  ButcherA(5,0) =  9017.0 / 3168.0;
-  ButcherA(5,1) = -355.0 / 33.0;
-  ButcherA(5,2) =  46732.0 / 5247.0;
-  ButcherA(5,3) =  49.0 / 176.0;
-  ButcherA(5,4) = -5103.0 / 18656.0;
+ButcherA(5,0) =  9017.0 / 3168.0;
+ButcherA(5,1) = -355.0 / 33.0;
+ButcherA(5,2) =  46732.0 / 5247.0;
+ButcherA(5,3) =  49.0 / 176.0;
+ButcherA(5,4) = -5103.0 / 18656.0;
 
-  ButcherA(6,0) =  35.0 / 384.0;
-  ButcherA(6,1) =  0.0;
-  ButcherA(6,2) =  500.0 / 1113;
-  ButcherA(6,3) =  125.0 / 192.0;
-  ButcherA(6,4) = -2187.0 / 6784.0;
-  ButcherA(6,5) =  11.0 / 84.0;
+ButcherA(6,0) =  35.0 / 384.0;
+ButcherA(6,1) =  0.0;
+ButcherA(6,2) =  500.0 / 1113;
+ButcherA(6,3) =  125.0 / 192.0;
+ButcherA(6,4) = -2187.0 / 6784.0;
+ButcherA(6,5) =  11.0 / 84.0;
 
-  ButcherB(0,0) =  35.0 / 384.0;
-  ButcherB(0,1) =  0.0;
-  ButcherB(0,2) =  500.0 / 1113.0;
-  ButcherB(0,3) =  125.0 / 192.0;
-  ButcherB(0,4) = -2187.0 / 6784.0;
-  ButcherB(0,5) =  11.0 / 84.0;
-  ButcherB(0,6) =  0.0;
+ButcherB(0,0) =  35.0 / 384.0;
+ButcherB(0,1) =  0.0;
+ButcherB(0,2) =  500.0 / 1113.0;
+ButcherB(0,3) =  125.0 / 192.0;
+ButcherB(0,4) = -2187.0 / 6784.0;
+ButcherB(0,5) =  11.0 / 84.0;
+ButcherB(0,6) =  0.0;
 
-  ButcherB(1,0) =  5179.0 / 57600.0;
-  ButcherB(1,1) =  0.0;
-  ButcherB(1,2) =  7571.0 / 16695.0;
-  ButcherB(1,3) =  393.0 / 640.0;
-  ButcherB(1,4) = -92097.0 / 339200.0;
-  ButcherB(1,5) =  187.0 / 2100.0;
-  ButcherB(1,6) =  1.0 / 40.0;
+ButcherB(1,0) =  5179.0 / 57600.0;
+ButcherB(1,1) =  0.0;
+ButcherB(1,2) =  7571.0 / 16695.0;
+ButcherB(1,3) =  393.0 / 640.0;
+ButcherB(1,4) = -92097.0 / 339200.0;
+ButcherB(1,5) =  187.0 / 2100.0;
+ButcherB(1,6) =  1.0 / 40.0;
 
-  ButcherC(0) = 0.0;
-  ButcherC(1) = 1.0 / 5.0;
-  ButcherC(2) = 3.0 / 10.0;
-  ButcherC(3) = 4.0 / 5.0;
-  ButcherC(4) = 8.0 / 9.0;
-  ButcherC(5) = 1.0;
-  ButcherC(6) = 1.0;
+ButcherC(0) = 0.0;
+ButcherC(1) = 1.0 / 5.0;
+ButcherC(2) = 3.0 / 10.0;
+ButcherC(3) = 4.0 / 5.0;
+ButcherC(4) = 8.0 / 9.0;
+ButcherC(5) = 1.0;
+ButcherC(6) = 1.0;
 
-  typedef std::vector< dealii::Vector<heat::real> > workspaceVectors;
-  dealii::Vector<heat::real> fourthOrder(numDof);
-  dealii::Vector<heat::real> fifthOrder(numDof);
-  fourthOrder = 0;
-  fifthOrder = 0;
-  workspaceVectors k(stages, dealii::Vector<heat::real>(numDof ));
+typedef std::vector< dealii::Vector<heat::real> > workspaceVectors;
+dealii::Vector<heat::real> fourthOrder(numDof);
+dealii::Vector<heat::real> fifthOrder(numDof);
+fourthOrder = 0;
+fifthOrder = 0;
+workspaceVectors k(stages, dealii::Vector<heat::real>(numDof ));
 
-  for(int stageNumber = 0; stageNumber < stages; ++stageNumber){
-  //compute k[j]
-  //  compute stage time
-  const heat::real stageTime = timeNow + deltaT * ButcherC[stageNumber];
-  //  compute stage Density;
-  //dealii::Vector<heat::real> stageState( numDof );
-  //stageState = Ustate;
-  Ustate = TempStorage;
-  for ( int j = 0; j < stageNumber-1; ++j){
-  Ustate.add( ButcherA(stageNumber, j), k[j]);
-  }
+for(int stageNumber = 0; stageNumber < stages; ++stageNumber){
+//compute k[j]
+//  compute stage time
+const heat::real stageTime = timeNow + deltaT * ButcherC[stageNumber];
+//  compute stage Density;
+//dealii::Vector<heat::real> stageState( numDof );
+//stageState = Ustate;
+Ustate = TempStorage;
+for ( int j = 0; j < stageNumber-1; ++j){
+Ustate.add( ButcherA(stageNumber, j), k[j]);
+}
 
-  // dealii::Vector<heat::real> stageDensityDot( numDof );
-  // stageDensityDot = 0;
+// dealii::Vector<heat::real> stageDensityDot( numDof );
+// stageDensityDot = 0;
 
-  ComputeDensityDot(stageTime);
-  k[stageNumber] = UStateDot;
-  k[stageNumber] *= deltaT;
-  }
+ComputeDensityDot(stageTime);
+k[stageNumber] = UStateDot;
+k[stageNumber] *= deltaT;
+}
 
-  for(int j = 0; j < stages; ++j){
+for(int j = 0; j < stages; ++j){
 
-  heat::real b = ButcherB(0,j);
-  fifthOrder.add( b , k[j] );
-  }
+heat::real b = ButcherB(0,j);
+fifthOrder.add( b , k[j] );
+}
 
-  for(int j = 0; j < stages; ++j){
-  heat::real b = ButcherB(1,j);
-  fourthOrder.add( b, k[j] );
-  }
+for(int j = 0; j < stages; ++j){
+heat::real b = ButcherB(1,j);
+fourthOrder.add( b, k[j] );
+}
 
-  dealii::Vector<heat::real> difference;
-  difference = fourthOrder;
-  difference -=fifthOrder;
+dealii::Vector<heat::real> difference;
+difference = fourthOrder;
+difference -=fifthOrder;
 
-  const heat::real errorSquared = MassU.matrix_norm_square(difference);
-  const heat::real error = sqrt(errorSquared);
-  const heat::real toleranceMultiplierSquared = MassU.matrix_norm_square(Ustate);
-  const heat::real toleranceMultiplier = sqrt(toleranceMultiplierSquared);
-  heat::real tolerance = toleranceMultiplier*.1;
-  // tolerance = std::max(tolerance, 4.0);
-  //  const heat::real beta = 1.0;
-  heat::real factor = NAN;
+const heat::real errorSquared = MassU.matrix_norm_square(difference);
+const heat::real error = sqrt(errorSquared);
+const heat::real toleranceMultiplierSquared = MassU.matrix_norm_square(Ustate);
+const heat::real toleranceMultiplier = sqrt(toleranceMultiplierSquared);
+heat::real tolerance = toleranceMultiplier*.1;
+// tolerance = std::max(tolerance, 4.0);
+//  const heat::real beta = 1.0;
+heat::real factor = NAN;
 
-  std::cout << "error = " << error << std::endl;
+std::cout << "error = " << error << std::endl;
 
-  if(error < tolerance){
-  factor = std::pow(tolerance / error, 0.25);
-  acceptFlag = true;
-  std::cout << "accept!" << std::endl;
-  assert(factor > 1.0);
-  DeltaUState = fourthOrder;
-  }
-  else{
-  factor = std::pow(tolerance / error, 1.20);
-  acceptFlag = false;
-  std::cout << "reject!" << std::endl;
+if(error < tolerance){
+factor = std::pow(tolerance / error, 0.25);
+acceptFlag = true;
+std::cout << "accept!" << std::endl;
+assert(factor > 1.0);
+DeltaUState = fourthOrder;
+}
+ else{
+factor = std::pow(tolerance / error, 1.20);
+acceptFlag = false;
+std::cout << "reject!" << std::endl;
 
-  }
-  deltaTRecommended = deltaT * factor;
-  Ustate = TempStorage;
-  }
-
-
+}
+deltaTRecommended = deltaT * factor;
+Ustate = TempStorage;
+}
 
 
-  template<int dim>
-  void
-  EllipticProblem<dim>::QSolve_NEW(dealii::Vector<heat::real> & Qdest,
+
+
+template<int dim>
+void
+EllipticProblem<dim>::QSolve_NEW(dealii::Vector<heat::real> & Qdest,
   dealii::Vector<heat::real> & mudest,
   const dealii::Vector<heat::real> & source1,
   const dealii::Vector<heat::real> & source2)
-  {
-  // TODO:  Need to figure out a way to handle the case when there is no
-  // Neumann boundary conditions.
+{
+// TODO:  Need to figure out a way to handle the case when there is no
+// Neumann boundary conditions.
 
-  // Assert that the sizes are correct?
-  dealii::deallog.push("QSolve_NEW");
-  // The following is almost exactly the same as Usolve
-  // TODO:  Figure out a way to combine these.
+// Assert that the sizes are correct?
+dealii::deallog.push("QSolve_NEW");
+// The following is almost exactly the same as Usolve
+// TODO:  Figure out a way to combine these.
 
-  dealii::PreconditionIdentity identity;
-  dealii::IterativeInverse<dealii::Vector< heat::real > > MassQInverse;
-  MassQInverse.initialize(MassQ, InverseMassQ);
-  MassQInverse.solver.select("cg");
-  //TODO:  Magic Numbers
+dealii::PreconditionIdentity identity;
+dealii::IterativeInverse<dealii::Vector< heat::real > > MassQInverse;
+MassQInverse.initialize(MassQ, InverseMassQ);
+MassQInverse.solver.select("cg");
+//TODO:  Magic Numbers
 
-  static dealii::SolverControl innerControl(5, 1e-10);
-  MassQInverse.solver.set_control(innerControl);
+static dealii::SolverControl innerControl(5, 1e-10);
+MassQInverse.solver.set_control(innerControl);
 
-  dealii::Vector<heat::real> temp(Qstate.size() );
-  {
-  dealii::Vector<heat::real> schur_rhs(constraintNeuQ.size() );
-  try {
-  MassQInverse.vmult(temp, source1);
-  } catch (...) {
-  std::cerr << "Failure in the first QSolve inversion." << std::endl;
-  std::abort();
-  }
+dealii::Vector<heat::real> temp(Qstate.size() );
+{
+dealii::Vector<heat::real> schur_rhs(constraintNeuQ.size() );
+try {
+MassQInverse.vmult(temp, source1);
+} catch (...) {
+std::cerr << "Failure in the first QSolve inversion." << std::endl;
+std::abort();
+}
 
-  TraceQNeu.vmult(schur_rhs, temp);
+TraceQNeu.vmult(schur_rhs, temp);
 
 
-  schur_rhs -= source2;
+schur_rhs -= source2;
 
-  heat::SchurComplement
-  schurComplement(TraceQNeu,MassQInverse);
-  heat::ApproximateSchurComplement
-  approx_schurcomplement(MassQ,TraceQNeu);
-  dealii::IterativeInverse<dealii::Vector<heat::real> >
-  preconditionInner;
-  preconditionInner.initialize(approx_schurcomplement, identity);
-  preconditionInner.solver.select("cg");
-  preconditionInner.solver.set_control(innerControl);
-  //TODO:  Magic Numbers
-  dealii::SolverControl solver_control( 40, 1e-8);
+heat::SchurComplement
+schurComplement(TraceQNeu,MassQInverse);
+heat::ApproximateSchurComplement
+approx_schurcomplement(MassQ,TraceQNeu);
+dealii::IterativeInverse<dealii::Vector<heat::real> >
+preconditionInner;
+preconditionInner.initialize(approx_schurcomplement, identity);
+preconditionInner.solver.select("cg");
+preconditionInner.solver.set_control(innerControl);
+//TODO:  Magic Numbers
+dealii::SolverControl solver_control( 40, 1e-8);
 
-  dealii::SolverCG<> cg(solver_control);
+dealii::SolverCG<> cg(solver_control);
 
-  //std::cout << "Q inner Solve" << std::endl;
-  try {
-  cg.solve(schurComplement, mudest, schur_rhs, identity);
-  } catch (...) {
-  std::cerr << "Failure in the QSolve SchurComplement" << std::endl;
+//std::cout << "Q inner Solve" << std::endl;
+try {
+cg.solve(schurComplement, mudest, schur_rhs, identity);
+} catch (...) {
+std::cerr << "Failure in the QSolve SchurComplement" << std::endl;
 
-  std::abort();
-  }
-  }
-  TraceQNeu.Tvmult(temp,mudest);
-  temp *= -1;
-  temp += source1;
+std::abort();
+}
+}
+TraceQNeu.Tvmult(temp,mudest);
+temp *= -1;
+temp += source1;
 
-  try {
-  MassQInverse.vmult(Qdest,temp);
-  } catch (...) {
-  std::cerr << "Failure in the QSolve Second Solve" << std::endl;
-  std::abort();
-  }
-  dealii::deallog.pop();
-  }
+try {
+MassQInverse.vmult(Qdest,temp);
+} catch (...) {
+std::cerr << "Failure in the QSolve Second Solve" << std::endl;
+std::abort();
+}
+dealii::deallog.pop();
+}
 p*/
 template<int dim>
 void
@@ -4825,7 +5134,7 @@ EllipticProblem<dim>::PrintState(const unsigned int timeStampNumber)
   // We have found that printing thing in the naive
   // way was the biggest bottleneck in the program.
   // So we are printing things this way;
-  {
+   {
     typedef dealii::DataComponentInterpretation::DataComponentInterpretation DCI_type;
     std::vector<std::string> SolutionNames;
     std::vector<DCI_type>
@@ -4845,7 +5154,7 @@ EllipticProblem<dim>::PrintState(const unsigned int timeStampNumber)
 	.push_back(dealii
 		   ::DataComponentInterpretation
 		   ::component_is_scalar);
-      //::component_is_part_of_vector);
+		   //::component_is_part_of_vector);
     }
 
     dealii::DataOut<dim> dataOutSys;
@@ -4860,11 +5169,18 @@ EllipticProblem<dim>::PrintState(const unsigned int timeStampNumber)
     state.block(0) = Ustate;
     state.block(1) = Qstate;
 
+    // std::cout << "Ustate Inside Print State" << std::endl;
+    // std::cout << Ustate << std::endl;
+
+    //std::cout << "state" << std::endl;
+    
+
     dataOutSys.add_data_vector(state,
 			       SolutionNames,
 			       dealii::DataOut<dim>::type_dof_data,
 			       DataComponentInterpretation);
-    dataOutSys.build_patches(degree*4);
+
+    dataOutSys.build_patches(degree+1);
     std::ostringstream filename;
     filename
       << "State-"
@@ -4880,4 +5196,3 @@ EllipticProblem<dim>::PrintState(const unsigned int timeStampNumber)
 
 template class heat::EllipticProblem<2>;
 template class heat::EllipticProblem<3>;
-

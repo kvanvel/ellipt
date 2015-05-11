@@ -9,7 +9,7 @@ DirichletBoundaryValues<dim>::value(const dealii::Point<dim> & p,
 {
   Assert(component == 0, dealii::ExcInternalError() );
   
-  return sin( p(0) ) * sin( p(1) );  
+  return sin( p(0) ) * cos( p(1) );  
 }
 
 

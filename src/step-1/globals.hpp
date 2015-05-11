@@ -3,6 +3,7 @@
 
 #include <grvy.h>
 
+#define PRINT(x) {std::cout << #x <<": "<<x << std::endl;}
 
 namespace heat{
 

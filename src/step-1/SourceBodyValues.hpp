@@ -12,15 +12,18 @@ class SourceBodyValues : public dealii::Function<dim>
 public:
   SourceBodyValues() : dealii::Function<dim>(1){}
 
-  using dealii::Function<dim>::value;
-  virtual double
+  //using dealii::Function<dim>::value;
+
+  heat::real
   value(const dealii::Point<dim> & /*p */,
-	const unsigned int componenet = 0) const;
+	const unsigned int component = 0) const;
   
-  using dealii::Function<dim>::value_list;
-  virtual void
+  //using dealii::Function<dim>::value_list;
+
+  void
   value_list(const std::vector<dealii::Point<dim > > & points,
-	     std::vector<heat::real > & values ) const;
+	     std::vector<heat::real> & values,
+	     const unsigned int component = 0) const;
   
 };
 
