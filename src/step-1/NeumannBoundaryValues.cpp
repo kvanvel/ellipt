@@ -10,22 +10,30 @@ namespace heat {
 
 
 template<int dim>
-dealii::Tensor<1,dim> 
-NeumannBoundaryValues<dim>::value(const dealii::Point<dim> & point) const
+dealii::Tensor<1,dim,heat::real> 
+NeumannBoundaryValues<dim>::value(const dealii::Point<dim> & p) const
 
 {
-  dealii::Tensor<1,dim> return_value;
-  return_value[0] = -cos(point[0]) * cos(point[1]);
-  return_value[1] =  sin(point[0]) * sin(point[1]);
+  assert(2 == dim);
 
-  return return_value;    
-    
+  double x = p(0);
+  double y = p(1);
+  double phi = std::atan2(y,-x)+M_PI;
+  double r43 = std::pow(x*x+y*y,2./3.);
+
+  dealii::Tensor<1,dim, heat::real> result;
+  result[0] = -2./3.*(std::sin(2./3.*phi)*x + std::cos(2./3.*phi)*y)/r43;
+  result[1] = -2./3.*(std::sin(2./3.*phi)*y - std::cos(2./3.*phi)*x)/r43;
+  return result;
+
+  //return_value[0] = -cos(point[0]) * cos(point[1]);
+  //return_value[1] =  sin(point[0]) * sin(point[1]);    
 }
 
 template<int dim>
 void
 NeumannBoundaryValues<dim>::value_list(const std::vector< dealii::Point<dim> > & points,
-				             std::vector< dealii::Tensor<1,dim> > & values) const
+				       std::vector< dealii::Tensor<1,dim,heat::real> > & values) const
 {
   Assert(points.size() == values.size(),
 	 dealii::ExcDimensionMismatch(points.size(), values.size() ) );

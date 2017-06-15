@@ -4,7 +4,7 @@ namespace heat {
   
 template <int dim>
 double
-DirichletBoundaryValuesDot<dim>::value(const dealii::Point<dim> & p,
+DirichletBoundaryValuesDot<dim>::value(const dealii::Point<dim> & /*p*/,
 				       const unsigned int component) const
 {
   Assert(component == 0, dealii::ExcInternalError() );  

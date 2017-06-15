@@ -3,6 +3,8 @@
 
 #include "globals.hpp"
 #include <deal.II/base/function.h>
+#include <deal.II/base/function_lib.h>
+#include <deal.II/base/exceptions.h>
 
 namespace heat{
 

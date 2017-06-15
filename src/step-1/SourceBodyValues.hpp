@@ -7,10 +7,10 @@
 namespace heat{
 
 template <int dim>
-class SourceBodyValues : public dealii::Function<dim>
+class SourceBodyValues : public dealii::Function<dim,heat::real>
 {
 public:
-  SourceBodyValues() : dealii::Function<dim>(1){}
+  SourceBodyValues() : dealii::Function<dim,heat::real>(1){}
 
   //using dealii::Function<dim>::value;
 

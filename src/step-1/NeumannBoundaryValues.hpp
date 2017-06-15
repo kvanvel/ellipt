@@ -8,22 +8,22 @@
 namespace heat{
 
 template <int dim>
-class NeumannBoundaryValues : public dealii::TensorFunction<1,dim>
+class NeumannBoundaryValues : public dealii::TensorFunction<1,dim, heat::real>
 {
 public:
-  NeumannBoundaryValues() : dealii::TensorFunction<1,dim>(){}
+  NeumannBoundaryValues() : dealii::TensorFunction<1,dim, heat::real>(){}
 
   //using dealii::Function<dim>::vector_value;
   //using dealii::Function<dim>::vector_value_list;
 
   virtual
-  dealii::Tensor<1,dim>
+  dealii::Tensor<1,dim,heat::real>
   value(const dealii::Point<dim> & point) const;
 	
 
   void
   value_list(const std::vector< dealii::Point<dim> > & point,
-	     std::vector< dealii::Tensor<1,dim> > & values) const;
+	     std::vector< dealii::Tensor<1,dim,heat::real> > & values) const;
   
 };
 

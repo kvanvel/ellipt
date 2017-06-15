@@ -7,47 +7,51 @@
 #include <stdlib.h>
 #include <complex>
 #include <limits>
-
+#include <ctime>
 
 #include <boost/math/constants/constants.hpp>
 
-
+#include <deal.II/base/convergence_table.h>
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/dofs/dof_renumbering.h>
 #include <deal.II/dofs/dof_tools.h>
-#include <deal.II/grid/grid_tools.h>
-#include <deal.II/grid/grid_generator.h>
-#include <deal.II/grid/tria.h>
-#include <deal.II/grid/tria_boundary_lib.h>
-#include <deal.II/grid/grid_out.h>
-#include <deal.II/grid/grid_refinement.h>
 #include <deal.II/fe/fe_dgp.h>
 #include <deal.II/fe/fe_dgq.h>
-#include <deal.II/fe/mapping_q1.h>
+#include <deal.II/fe/fe_dg_vector.h>
 #include <deal.II/fe/fe_raviart_thomas.h>
 #include <deal.II/fe/fe_system.h>
-#include <deal.II/fe/fe_values.h>
 #include <deal.II/fe/fe_tools.h>
+#include <deal.II/fe/fe_values.h>
+
+#include <deal.II/fe/mapping_q1.h>
+#include <deal.II/fe/mapping_q.h>
+#include <deal.II/grid/grid_generator.h>
+#include <deal.II/grid/grid_out.h>
+#include <deal.II/grid/grid_refinement.h>
+#include <deal.II/grid/grid_tools.h>
+#include <deal.II/grid/tria.h>
+#include <deal.II/grid/tria_boundary_lib.h>
+#include <deal.II/lac/arpack_solver.h>
 #include <deal.II/lac/block_sparse_matrix.h>
+#include <deal.II/lac/identity_matrix.h>
 #include <deal.II/lac/lapack_full_matrix.h>
+#include <deal.II/lac/linear_operator.h>
+#include <deal.II/lac/pointer_matrix.h>
+#include <deal.II/lac/precondition.h>
+#include <deal.II/lac/schur_matrix.h>
+#include <deal.II/lac/solver_cg.h>
 #include <deal.II/lac/sparse_direct.h>
 #include <deal.II/lac/sparse_matrix.h>
-#include <deal.II/lac/schur_matrix.h>
-#include <deal.II/lac/identity_matrix.h>
-#include <deal.II/lac/arpack_solver.h>
 #include <deal.II/lac/transpose_matrix.h>
-#include <deal.II/lac/pointer_matrix.h>
-#include <deal.II/lac/linear_operator.h>
-#include <deal.II/numerics/vector_tools.h>
+#include <deal.II/meshworker/assembler.h>
+#include <deal.II/meshworker/dof_info.h>
+#include <deal.II/meshworker/integration_info.h> 
+#include <deal.II/meshworker/loop.h>
+#include <deal.II/meshworker/simple.h>
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/matrix_tools.h>
 #include <deal.II/numerics/solution_transfer.h>
-
-#include <deal.II/meshworker/dof_info.h>
-#include <deal.II/meshworker/integration_info.h> 
-#include <deal.II/meshworker/simple.h>
-#include <deal.II/meshworker/assembler.h>
-#include <deal.II/meshworker/loop.h>
+#include <deal.II/numerics/vector_tools.h>
 
 #include "globals.hpp"
 
@@ -79,11 +83,31 @@ private:
   print_system();
 
   void
+  distill_matrices();
+
+  void
+  refine_grid_and_transfer_solution();
+
+  void
+  compute_errors();
+
+  void
   output_results_eigensystem();
   
   void 
   make_grid();
 
+  void
+  ParabolicComputeQperp();
+
+  void
+  ParabolicComputeUperp();
+
+  void
+  ParabolicComputeQpar();
+
+  void
+  ParabolicComputeUpar();
   
   void 
   make_dofs_first_time();
@@ -409,7 +433,6 @@ private:
   (
    const typename
    dealii::DoFHandler<dim-1, dim >::active_cell_iterator & test_iterator,
-
    const typename
    dealii::DoFHandler<dim,dim>::active_cell_iterator & tria_iterator,
    const dealii::FullMatrix<heat::real> & local_matrix,
@@ -428,18 +451,6 @@ private:
    const dealii::Vector<heat::real> & local_vector,
    dealii::Vector<heat::real> & global_vector);
 
-
-  std::map<typename dealii::DoFHandler<dim-1, dim>::cell_iterator,
-	   typename dealii::DoFHandler<dim  , dim>::face_iterator>
-    DirSurfaceToVolumeTriangulationMap,
-    NeuSurfaceToVolumeTriangulationMap,
-    RobSurfaceToVolumeTriangulationMap;
-
-  std::map<typename dealii::DoFHandler<dim  ,dim>::face_iterator,
-	   typename dealii::DoFHandler<dim-1,dim>::cell_iterator>
-    DirVolumeToSurfaceTriangulationMap,
-    NeuVolumeToSurfaceTriangulationMap,
-    RobVolumeToSurfaceTriangulationMap;
   
   dealii::Point<dim> referenceDirection;  
   
@@ -457,11 +468,12 @@ private:
   dealii::Triangulation<dim-1,dim> triangulation_Rob;
   
   dealii::FESystem<dim> feSystem;
-  dealii::FE_DGQ<dim> feU;
-  dealii::FESystem<dim> feQ;  
-  dealii::FE_DGQ<dim-1,dim> feTraceU_Dir;
-  dealii::FE_DGQ<dim-1,dim> feTraceU_Neu;
-  dealii::FE_DGQ<dim-1,dim> feTraceU_Rob;
+  dealii::FE_DGP<dim> feU;
+  dealii::FESystem<dim> feQ;
+  // dealii::FE_DGRaviartThomas<dim> feQ;
+  // dealii::FE_DGQ<dim-1,dim> feTraceU_Dir;
+  // dealii::FE_DGQ<dim-1,dim> feTraceU_Neu;
+  // dealii::FE_DGQ<dim-1,dim> feTraceU_Rob;
   
   dealii::ConstraintMatrix constraintU;
   dealii::ConstraintMatrix constraintElec;
@@ -471,9 +483,9 @@ private:
   dealii::DoFHandler<dim> dof_handlerU;
   dealii::DoFHandler<dim> dof_handlerQ;
   
-  dealii::DoFHandler<dim-1,dim> dof_handlerTraceU_Dir;
-  dealii::DoFHandler<dim-1,dim> dof_handlerTraceU_Neu;
-  dealii::DoFHandler<dim-1,dim> dof_handlerTraceU_Rob;
+  // dealii::DoFHandler<dim-1,dim> dof_handlerTraceU_Dir;
+  // dealii::DoFHandler<dim-1,dim> dof_handlerTraceU_Neu;
+  // dealii::DoFHandler<dim-1,dim> dof_handlerTraceU_Rob;
 
   //dealii::DoFHandler<dim> dof_handlerPot;
   //dealii::DoFHandler<dim> dof_handlerElec;
@@ -505,11 +517,11 @@ private:
     TraceUDirSparsityPattern,
     TraceQNeuSparsityPattern,
     TraceQRobSparsityPattern,
-    TRACE_U_DIR_NEW_SparsityPattern;  
-  
-  // std::vector<std::vector<unsigned int> > MassUCols;
-  // std::vector<std::vector<std::pair<unsigned int, heat::real> > >  
-  // MassUColsVals;
+    Svd_U_for_DirSparsityPattern,
+    Svd_Sigma_for_DirSparsityPattern,
+    Svd_U_for_NeuSparsityPattern,
+    Svd_Sigma_for_NeuSparsityPattern,
+    TRACE_U_DIR_NEW_SparsityPattern;    
   
   dealii::SparseMatrix<heat::real>
   InverseMassU,
@@ -546,18 +558,11 @@ private:
   TRACE_U_DIR_NEW
     ;
 
-
-  
-  dealii::SparseDirectUMFPACK MassUInverseDirect;
-  dealii::SparseDirectUMFPACK MassQInverseDirect;
+  //dealii::SparseDirectUMFPACK MassUInverseDirect;
+  //dealii::SparseDirectUMFPACK MassQInverseDirect;
   //dealii::SparseDirectUMFPACK MassElecInverseDirect;
   
   dealii::MatrixBlockVector<dealii::SparseMatrix<heat::real> > SystemMatricesCollection;
-
-  // dealii::SmartPointer<dealii::SparseMatrix<heat::real> > 
-  //   MassUNEWptr,
-  //   MassQNEWprt,  
-
   dealii::AnyData SystemRHSsAndConstraints;
 
   dealii::SparseMatrixEZ<heat::real>
@@ -567,33 +572,32 @@ private:
     QQ,
     RR,
     SS;
-  
-  
+    
   dealii::BlockVector<heat::real> state;
   dealii::BlockVector<heat::real> BlockMinusRHS;
   dealii::BlockVector<heat::real> BlockConstraints;
   dealii::BlockVector<heat::real> EstimatedError;
   
   dealii::Vector<heat::real> Ustate;
-  dealii::Vector<heat::real> UperpNEW;
-  dealii::Vector<heat::real> UparNEW;
+  dealii::Vector<heat::real> Uperp;
+  dealii::Vector<heat::real> Upar;
   dealii::Vector<heat::real> UstateTransferedFromOld;
   dealii::Vector<heat::real> MuStateTransferedFromOld;
   dealii::Vector<heat::real> LambdaStateTransferedFromOld;
   //dealii::Vector<heat::real> DeltaUState;
   //dealii::Vector<heat::real> UStateDot;
-  dealii::Vector<heat::real> lagrangeU;
+  //dealii::Vector<heat::real> lagrangeU;
   dealii::Vector<heat::real> lambdaU;
   dealii::Vector<heat::real> constraintDirU;
   dealii::Vector<heat::real> Qstate;
-  dealii::Vector<heat::real> QperpNEW;
-  dealii::Vector<heat::real> QparNEW;
+  dealii::Vector<heat::real> Qperp;
+  dealii::Vector<heat::real> Qpar;
   dealii::Vector<heat::real> QStateTransferedFromOld;
   dealii::Vector<heat::real> lambdaHat_UGLY;
   dealii::Vector<heat::real> lambda_UGLY;
   dealii::Vector<heat::real> mu_UGLY;
   dealii::Vector<heat::real> muHat_UGLY;  
-  dealii::Vector<heat::real> lagrangeQ;
+  //dealii::Vector<heat::real> lagrangeQ;
   dealii::Vector<heat::real> constraintNeuQ; //And Rob?
   //dealii::Vector<heat::real> U_RHS;
   dealii::Vector<heat::real> U_MinusRHS;
@@ -609,16 +613,13 @@ private:
   //dealii::Vector<heat::real> lagrangeElec;
   std::vector< dealii::Vector<heat::real> > UeigenStates;
   std::vector< dealii::Vector<heat::real> > QeigenStates;
-  
-  dealii::MappingQ1<dim> mapping;
-  dealii::MappingQ1<dim-1,dim> faceMapping;
 
-  // std::vector<dealii::types::global_dof_index >
-  //   uDofsWithSupportOnBoundary,
-  //   qDotsWithOrthongalSupportOnBoundary;
+  const dealii::MappingQ<dim,dim> mapping;
+  const dealii::MappingQ<dim-1,dim> faceMapping;
 
-  
-};  
+  std::map<dealii::types::boundary_id,
+	   heat::myBoundaryID> BoundaryIDMap;
+};
 
 } //end namespace heat
 

@@ -1,5 +1,5 @@
 ##
-#  CMake script for the step-1 tutorial program:
+# CMake script for the step-1 tutorial program:
 ##
 
 # Set the name of the project and target:
@@ -16,19 +16,19 @@ SET(TARGET_SRC
   SourceBodyValues.cpp  
   NeumannBoundaryValues.cpp
   EllipticProblem.cpp
-  PSigmaPStar.cpp
-  Q_UStar_SStar_inverseMassQ_S_U_Q.cpp
-  Q_UStar_massU_U_QStar.cpp
-  SS_UStar_massQ_U_SSStar.cpp
-  SS_UStar_TotalQFromU_U_QQStar.cpp
+  #PSigmaPStar.cpp
+  #Q_UStar_SStar_inverseMassQ_S_U_Q.cpp
+  #  Q_UStar_massU_U_QStar.cpp
+  #  SS_UStar_massQ_U_SSStar.cpp
+  #  SS_UStar_TotalQFromU_U_QQStar.cpp
   ApproximateSchurComplement.cpp
-  SchurComplementPoisson.cpp
-  SchurComplementNEW.cpp
-  LDGIntegrator.cpp
-  LDGIntegratorKENT.cpp
+  #  SchurComplementPoisson.cpp
+  #  SchurComplementNEW.cpp
+  LDGIntegrator.cpp  
+  LDGIntegratorDrift.cpp
   LDGErrorIntegrator.cpp
   ApproximateSchurComplementPoisson.cpp
-  NeumanBoundaryValuesPoisson.cpp
+  #  NeumanBoundaryValuesPoisson.cpp
   # You can specify additional files here!
 )
 
@@ -46,7 +46,8 @@ CMAKE_MINIMUM_REQUIRED(VERSION 2.8.8)
 
 FIND_PACKAGE(deal.II 8.0 QUIET
   HINTS ${deal.II_DIR} ${DEAL_II_DIR} ../ ../../
-  /home/kvanvels/share /h1/kvanvels/workspace/deal.II
+  /home/kvanvel/Workspace/git/dealiiBase/dealiiInstall
+  /home/kvanvels/share 
 /home/kvanvels/deal.II $ENV{DEAL_II_DIR}
   )
 IF(NOT ${deal.II_FOUND})
@@ -62,5 +63,5 @@ DEAL_II_INITIALIZE_CACHED_VARIABLES()
 PROJECT(${TARGET})
 
 DEAL_II_INVOKE_AUTOPILOT()
-TARGET_LINK_LIBRARIES(${TARGET} /usr/local/lib/libgrvy.so)
+#TARGET_LINK_LIBRARIES(${TARGET} /usr/local/lib/libgrvy.so)
 

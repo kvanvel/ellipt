@@ -4,11 +4,12 @@ namespace heat {
   
 template <int dim>
 heat::real
-SourceBodyValues<dim>::value(const dealii::Point<dim> & p,
+SourceBodyValues<dim>::value(const dealii::Point<dim> & /*p*/,
 			     const unsigned int component) const
 {
   Assert(component == 0, dealii::ExcInternalError() );
-  return 2.0 * sin(p[0]) * cos(p[1]);
+  return 0.0;
+  //return 2.0 * sin(p[0]) * cos(p[1]);
   
 }
 

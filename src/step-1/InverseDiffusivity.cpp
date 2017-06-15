@@ -5,7 +5,7 @@
 template <int dim>
 void
 heat
-::InverseDiffusivity<dim>::value (const dealii::Point<dim> & point,
+::InverseDiffusivity<dim>::value (const dealii::Point<dim> & /*point*/,
 				  dealii::Tensor<2,dim> & value) const
 {
   

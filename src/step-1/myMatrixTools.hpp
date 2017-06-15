@@ -102,12 +102,11 @@ PrintMatrixMarket(const dealii::SparseMatrixEZ<heat::real> & In,
 template<class SPARSEMATRIX>
 void
 DistillMatrix(SPARSEMATRIX & matrixIN,
-	      typename dealii::SparsityPattern & sparsityPattern,	      
-	      heat::real threshold = 1e-10)
+	      typename dealii::SparsityPattern & sparsityPattern)
+	      
 {
   
-  Assert( matrixIN.m() != 0, dealii::ExcNotInitialized() );
-  Assert( threshold > 0, dealii::ExcMessage("Negative threshold!") );  
+  Assert( matrixIN.m() != 0, dealii::ExcNotInitialized() );  
 
   
   const dealii::SparseMatrix<heat::real>::size_type n_rows = matrixIN.m();
@@ -117,10 +116,12 @@ DistillMatrix(SPARSEMATRIX & matrixIN,
   std::vector<std::vector<std::pair<dealii::SparseMatrix<heat::real>::size_type, heat::real> > >
     colVal_indices(n_rows );
 
+  heat::real zero = 0.0;
+  
   for(unsigned int i = 0; i < n_rows; ++i){    
     for(auto it = matrixIN.begin(i); it != matrixIN.end(i); ++it){
       const auto value = it->value();
-      if(fabs(value) > threshold){
+      if(fabs(value) > zero){
 	const auto col = it->column();
 	const std::pair<dealii::SparseMatrix<heat::real>::size_type, heat::real> tempPair {col, value};
 	col_indices[i].push_back(col);
